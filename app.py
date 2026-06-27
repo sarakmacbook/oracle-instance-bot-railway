@@ -607,7 +607,7 @@ def test_telegram():
         return jsonify({'success': False, 'error': 'Bot token and chat ID are required'})
     ok, err = send_telegram_message(
         bot_token, chat_id,
-        "&#9989; <b>OCI Provisioner Test</b>\n\nTelegram alerts are configured correctly!"
+        "&#9989; <b>OCI Instance loop Connected</b>\n\nYour Telegram alerts are now active. You will receive notifications when provisioning succeeds or fails."
     )
     if ok:
         return jsonify({'success': True, 'message': 'Test message sent successfully'})
