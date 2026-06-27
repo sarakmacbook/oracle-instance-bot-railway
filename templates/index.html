@@ -33,6 +33,28 @@
         }
         .status-running { background-color: #39ff14; box-shadow: 0 0 8px #39ff14; }
         .status-stopped { background-color: #ff4757; }
+        .randomize-frame {
+            border: 2px solid #0d6efd;
+            border-radius: 8px;
+            padding: 4px 8px;
+            background: linear-gradient(135deg, #e3f2fd 0%, #f0f8ff 100%);
+            transition: all 0.3s ease;
+        }
+        .randomize-frame:hover {
+            border-color: #0a58ca;
+            background: linear-gradient(135deg, #d4edff 0%, #e6f3ff 100%);
+            box-shadow: 0 2px 8px rgba(13, 110, 253, 0.2);
+        }
+        .randomize-frame.active {
+            border-color: #dc3545;
+            background: linear-gradient(135deg, #fff5f5 0%, #ffe6e6 100%);
+            animation: pulse-frame 2s infinite;
+        }
+        @keyframes pulse-frame {
+            0% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.4); }
+            70% { box-shadow: 0 0 0 6px rgba(220, 53, 69, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
+        }
     </style>
     <script>
         let currentLogOffset = 0;
@@ -202,12 +224,14 @@
 
         function randomizeRetryDelay() {
             isRandomized = !isRandomized;
-            const btn = document.querySelector("button[onclick='randomizeRetryDelay()']");
+            const btn = document.getElementById("randomizeBtn");
+            const frame = document.getElementById("randomizeFrame");
             const hiddenInput = document.getElementById("randomize_delay");
             const delayInput = document.getElementById("retry_delay");
 
             if (isRandomized) {
                 hiddenInput.value = "true";
+                frame.classList.add("active");
                 btn.innerHTML = "&#128293; Dynamic<br><small>25-60s</small>";
                 btn.classList.remove("btn-link", "text-primary");
                 btn.classList.add("btn-outline-danger");
@@ -216,11 +240,14 @@
                 btn.style.color = "#fff";
                 btn.style.border = "none";
                 btn.style.fontWeight = "bold";
+                btn.style.borderRadius = "4px";
+                btn.style.padding = "2px 6px";
                 delayInput.disabled = true;
                 delayInput.style.opacity = "0.5";
                 alert("Dynamic retry enabled: delays will randomly vary between 25-60 seconds to avoid OCI rate limits.");
             } else {
                 hiddenInput.value = "false";
+                frame.classList.remove("active");
                 btn.innerHTML = "Randomize<br>between 25s to 60s";
                 btn.classList.remove("btn-outline-danger");
                 btn.classList.add("btn-link", "text-primary");
@@ -229,6 +256,8 @@
                 btn.style.color = "";
                 btn.style.border = "";
                 btn.style.fontWeight = "";
+                btn.style.borderRadius = "";
+                btn.style.padding = "";
                 delayInput.disabled = false;
                 delayInput.style.opacity = "1";
                 delayInput.value = 60;
@@ -592,7 +621,9 @@
                             <label class="form-label fw-bold text-primary">Retry Delay (seconds)</label>
                             <div class="d-flex align-items-center gap-2">
                                 <input type="number" id="retry_delay" class="form-control border-primary" value="60" min="10" max="3600" onchange="validateRetryDelay()" style="flex:1;">
-                                <button type="button" class="btn btn-link text-primary fw-bold p-0" style="font-size:0.85rem; text-decoration:none; white-space:nowrap;" onclick="randomizeRetryDelay()">Randomize<br>between 25s to 60s</button>
+                                <div id="randomizeFrame" class="randomize-frame">
+                                    <button type="button" id="randomizeBtn" class="btn btn-link text-primary fw-bold p-0" style="font-size:0.85rem; text-decoration:none; white-space:nowrap;" onclick="randomizeRetryDelay()">Randomize<br>between 25s to 60s</button>
+                                </div>
                             </div>
                             <div id="retryWarning" class="form-text text-danger fw-bold d-none">&#9888; Warning: Low delay may trigger OCI rate limits or abuse detection!</div>
                         </div>
