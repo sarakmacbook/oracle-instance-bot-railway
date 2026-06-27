@@ -461,13 +461,16 @@
             const token = document.getElementById("tg_bot_token").value.trim();
             const chatId = document.getElementById("tg_chat_id").value.trim();
             const resultDiv = document.getElementById("tgTestResult");
+            const connectBtn = document.getElementById("tgConnectBtn");
+            const disconnectBtn = document.getElementById("tgDisconnectBtn");
 
             if (!token || !chatId) {
                 resultDiv.innerHTML = '<span class="text-warning">&#9888; Please fill both fields.</span>';
                 return;
             }
 
-            resultDiv.innerHTML = '<span class="text-info">Sending test...</span>';
+            resultDiv.innerHTML = '<span class="text-info">Sending connected message...</span>';
+            connectBtn.disabled = true;
 
             try {
                 const response = await fetch('/api/test-telegram', {
@@ -481,16 +484,35 @@
                     telegramConfig.enabled = true;
                     telegramConfig.botToken = token;
                     telegramConfig.chatId = chatId;
-                    resultDiv.innerHTML = '<span class="text-success">&#10004; Test OK! Alerts enabled.</span>';
+                    resultDiv.innerHTML = '<span class="text-success">&#10004; Connected! Alerts enabled.</span>';
                     document.getElementById("telegramAlertBtn").classList.remove("btn-outline-primary");
                     document.getElementById("telegramAlertBtn").classList.add("btn-primary");
                     document.getElementById("telegramAlertBtn").innerHTML = "&#128172; Telegram Alert (ON)";
+                    connectBtn.classList.add("d-none");
+                    disconnectBtn.classList.remove("d-none");
                 } else {
                     resultDiv.innerHTML = '<span class="text-danger">&#10008; Failed: ' + result.error + '</span>';
+                    connectBtn.disabled = false;
                 }
             } catch (err) {
                 resultDiv.innerHTML = '<span class="text-danger">&#10008; Error: ' + err.message + '</span>';
+                connectBtn.disabled = false;
             }
+        }
+
+        function disconnectTelegram() {
+            telegramConfig.enabled = false;
+            telegramConfig.botToken = '';
+            telegramConfig.chatId = '';
+            document.getElementById("tg_bot_token").value = '';
+            document.getElementById("tg_chat_id").value = '';
+            document.getElementById("tgTestResult").innerHTML = '<span class="text-muted">Alerts disabled.</span>';
+            document.getElementById("telegramAlertBtn").classList.remove("btn-primary");
+            document.getElementById("telegramAlertBtn").classList.add("btn-outline-primary");
+            document.getElementById("telegramAlertBtn").innerHTML = "&#128172; Telegram Alert";
+            document.getElementById("tgConnectBtn").classList.remove("d-none");
+            document.getElementById("tgConnectBtn").disabled = false;
+            document.getElementById("tgDisconnectBtn").classList.add("d-none");
         }
 
         async function sendTelegramAlert(message) {
@@ -555,7 +577,8 @@
                             <input type="password" id="tg_bot_token" class="form-control form-control-sm bg-dark text-white border-0 mb-2" placeholder="123456:ABC-DEF...">
                             <label class="form-label text-white-50 small mb-1">Chat ID:</label>
                             <input type="text" id="tg_chat_id" class="form-control form-control-sm bg-dark text-white border-0 mb-2" placeholder="@channel or 123456789">
-                            <button type="button" class="btn btn-success btn-sm w-100" onclick="testTelegramAlert()">Test Alert</button>
+                            <button type="button" id="tgConnectBtn" class="btn btn-success btn-sm w-100" onclick="testTelegramAlert()">&#128279; Send Connected Message</button>
+                            <button type="button" id="tgDisconnectBtn" class="btn btn-outline-danger btn-sm w-100 mt-2 d-none" onclick="disconnectTelegram()">&#128683; Turn Off Alerts</button>
                             <div id="tgTestResult" class="form-text small mt-1"></div>
                         </div>
                     </div>
