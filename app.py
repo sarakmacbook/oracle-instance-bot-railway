@@ -312,6 +312,26 @@ def send_telegram_message(bot_token, chat_id, message):
         return False, str(e)
 
 
+
+
+def get_oci_username(config, identity_client):
+    """Fetch the username/email from OCI Identity API using user OCID."""
+    try:
+        user_ocid = config.get('user')
+        if not user_ocid:
+            return None
+        user = identity_client.get_user(user_ocid=user_ocid).data
+        # Prefer email, fallback to name, then description
+        return (
+            getattr(user, 'email', None) or
+            getattr(user, 'name', None) or
+            getattr(user, 'description', None) or
+            user_ocid
+        )
+    except Exception:
+        return None
+
+
 def run_automated_creation(config, account_config,
                            compute_client, network_client, identity_client,
                            retry_delay=60, randomize_delay=False, random_min=25, random_max=60,
@@ -329,6 +349,11 @@ def run_automated_creation(config, account_config,
 
         target_region = config.get('region', 'unknown')
         target_name = account_config.get('display_name', 'AlwaysFree-Bot')
+
+        # Detect OCI username
+        oci_username = get_oci_username(config, identity_client)
+        if oci_username:
+            add_log(f"OCI username detected: {oci_username}")
 
         add_log(f"Initializing infrastructure scan inside: {target_region}...")
 
@@ -425,11 +450,13 @@ def run_automated_creation(config, account_config,
                     instance_name = account_config.get('display_name', 'AlwaysFree-Bot')
                     shape = account_config.get('shape', 'Unknown')
                     region = config.get('region', 'unknown')
+                    user_line = f"<b>User:</b> {oci_username}\n" if oci_username else ""
                     tg_msg = (
                         f"&#9989; <b>OCI Provisioner Success!</b>\n\n"
                         f"<b>Instance:</b> {instance_name}\n"
                         f"<b>Shape:</b> {shape}\n"
                         f"<b>Region:</b> {region}\n"
+                        f"{user_line}"
                         f"<b>Status:</b> Running\n\n"
                         f"Your Always Free instance has been successfully provisioned!"
                     )
@@ -443,7 +470,8 @@ def run_automated_creation(config, account_config,
             except oci.exceptions.ServiceError as e:
                 msg = str(e)
                 if "Out of capacity" in msg or e.status in (500, 429):
-                    add_log(f"Capacity busy in '{target_region}'. Retrying...")
+                    user_info = f" [user: {oci_username}]" if oci_username else ""
+                    add_log(f"Capacity busy in '{target_region}'.{user_info} Retrying...")
                 else:
                     add_log(f"OCI API error: {e.message}")
                     break
@@ -460,18 +488,22 @@ def run_automated_creation(config, account_config,
         if not success and attempts >= MAX_ATTEMPTS:
             add_log(f"Reached maximum attempts ({MAX_ATTEMPTS}). Stopping loop.")
             if telegram_bot_token and telegram_chat_id:
+                user_line = f"<b>User:</b> {oci_username}\n" if oci_username else ""
                 tg_msg = (
                     f"&#10060; <b>OCI Provisioner Failed</b>\n\n"
+                    f"{user_line}"
                     f"Reached maximum attempts ({MAX_ATTEMPTS}) without success.\n"
-                    f"Region: {config.get('region', 'unknown')}"
+                    f"<b>Region:</b> {config.get('region', 'unknown')}"
                 )
                 send_telegram_message(telegram_bot_token, telegram_chat_id, tg_msg)
 
     except Exception as e:
         add_log(f"Automation engine failure: {str(e)}")
         if telegram_bot_token and telegram_chat_id:
+            user_line = f"<b>User:</b> {oci_username}\n" if oci_username else ""
             tg_msg = (
                 f"&#10060; <b>OCI Provisioner Error</b>\n\n"
+                f"{user_line}"
                 f"Automation engine failure:\n{str(e)}"
             )
             send_telegram_message(telegram_bot_token, telegram_chat_id, tg_msg)
