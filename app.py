@@ -5,6 +5,7 @@ import random
 import threading
 import datetime
 import functools
+import requests
 from flask import Flask, render_template, request, jsonify, Response
 import oci
 
@@ -288,9 +289,33 @@ def get_free_tier_usage(config, compute_client, block_client, identity_client):
     }
 
 
+
+
+def send_telegram_message(bot_token, chat_id, message):
+    """Send a message via Telegram Bot API."""
+    if not bot_token or not chat_id:
+        return False, "Missing bot token or chat ID"
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        response = requests.post(url, json=payload, timeout=10)
+        data = response.json()
+        if data.get("ok"):
+            return True, "Message sent"
+        else:
+            return False, data.get("description", "Unknown Telegram error")
+    except Exception as e:
+        return False, str(e)
+
+
 def run_automated_creation(config, account_config,
                            compute_client, network_client, identity_client,
-                           retry_delay=60, randomize_delay=False, random_min=25, random_max=60):
+                           retry_delay=60, randomize_delay=False, random_min=25, random_max=60,
+                           telegram_bot_token=None, telegram_chat_id=None):
     global automation_running
 
     try:
@@ -395,6 +420,24 @@ def run_automated_creation(config, account_config,
                 compute_client.launch_instance(instance_details)
                 add_log("SUCCESS! Instance created and running.")
                 success = True
+                # Send Telegram alert if configured
+                if telegram_bot_token and telegram_chat_id:
+                    instance_name = account_config.get('display_name', 'AlwaysFree-Bot')
+                    shape = account_config.get('shape', 'Unknown')
+                    region = config.get('region', 'unknown')
+                    tg_msg = (
+                        f"&#9989; <b>OCI Provisioner Success!</b>\n\n"
+                        f"<b>Instance:</b> {instance_name}\n"
+                        f"<b>Shape:</b> {shape}\n"
+                        f"<b>Region:</b> {region}\n"
+                        f"<b>Status:</b> Running\n\n"
+                        f"Your Always Free instance has been successfully provisioned!"
+                    )
+                    tg_ok, tg_err = send_telegram_message(telegram_bot_token, telegram_chat_id, tg_msg)
+                    if tg_ok:
+                        add_log("Telegram success alert sent.")
+                    else:
+                        add_log(f"Telegram alert failed: {tg_err}")
                 break
 
             except oci.exceptions.ServiceError as e:
@@ -416,9 +459,22 @@ def run_automated_creation(config, account_config,
 
         if not success and attempts >= MAX_ATTEMPTS:
             add_log(f"Reached maximum attempts ({MAX_ATTEMPTS}). Stopping loop.")
+            if telegram_bot_token and telegram_chat_id:
+                tg_msg = (
+                    f"&#10060; <b>OCI Provisioner Failed</b>\n\n"
+                    f"Reached maximum attempts ({MAX_ATTEMPTS}) without success.\n"
+                    f"Region: {config.get('region', 'unknown')}"
+                )
+                send_telegram_message(telegram_bot_token, telegram_chat_id, tg_msg)
 
     except Exception as e:
         add_log(f"Automation engine failure: {str(e)}")
+        if telegram_bot_token and telegram_chat_id:
+            tg_msg = (
+                f"&#10060; <b>OCI Provisioner Error</b>\n\n"
+                f"Automation engine failure:\n{str(e)}"
+            )
+            send_telegram_message(telegram_bot_token, telegram_chat_id, tg_msg)
 
     finally:
         with automation_lock:
@@ -505,7 +561,9 @@ def auto_launch():
 
         thread = threading.Thread(
             target=run_automated_creation,
-            args=(config, data, compute_client, network_client, identity_client, retry_delay, randomize_delay, random_min, random_max),
+            args=(config, data, compute_client, network_client, identity_client,
+                  retry_delay, randomize_delay, random_min, random_max,
+                  data.get('telegram_bot_token'), data.get('telegram_chat_id')),
             daemon=True
         )
         thread.start()
@@ -537,6 +595,33 @@ def fetch_live_logs():
         batch = global_logs[offset:]
         total = len(global_logs)
     return jsonify({'logs': batch, 'next_offset': total})
+
+
+@app.route('/api/test-telegram', methods=['POST'])
+@require_auth
+def test_telegram():
+    data = request.json or {}
+    bot_token = data.get('bot_token', '').strip()
+    chat_id = data.get('chat_id', '').strip()
+    if not bot_token or not chat_id:
+        return jsonify({'success': False, 'error': 'Bot token and chat ID are required'})
+    ok, err = send_telegram_message(
+        bot_token, chat_id,
+        "&#9989; <b>OCI Provisioner Test</b>\n\nTelegram alerts are configured correctly!"
+    )
+    if ok:
+        return jsonify({'success': True, 'message': 'Test message sent successfully'})
+    return jsonify({'success': False, 'error': err})
+
+
+@app.route('/api/send-telegram', methods=['POST'])
+@require_auth
+def send_telegram():
+    data = request.json or {}
+    ok, err = send_telegram_message(
+        data.get('bot_token'), data.get('chat_id'), data.get('message', '')
+    )
+    return jsonify({'success': ok, 'error': err})
 
 
 if __name__ == '__main__':
