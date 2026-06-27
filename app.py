@@ -22,7 +22,7 @@ def add_security_headers(response):
 # ---- Config ----
 ADMIN_PASSWORD = os.environ.get('APP_PASSWORD')
 if not ADMIN_PASSWORD:
-    raise RuntimeError("APP_PASSWORD environment variable must be set")
+    print("WARNING: APP_PASSWORD not set. Running WITHOUT authentication. Set APP_PASSWORD to enable Basic Auth.")
 
 MAX_ATTEMPTS = int(os.environ.get('MAX_ATTEMPTS', 100))
 
