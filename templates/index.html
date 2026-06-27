@@ -335,7 +335,10 @@
                     if (u.arm.instances.length > 0) {
                         html += '<div class="mt-2"><small class="text-muted">Active ARM instances:</small><ul class="mb-0">';
                         u.arm.instances.forEach(inst => {
-                            html += '<li><small>' + inst.name + ': ' + inst.ocpus + ' OCPU, ' + inst.memory + ' GB RAM</small></li>';
+                            var stateBadge = inst.state === 'RUNNING' ? '<span class="badge bg-success" style="font-size:0.6rem;">RUN</span>' : 
+                                             inst.state === 'STOPPED' ? '<span class="badge bg-secondary" style="font-size:0.6rem;">STOP</span>' :
+                                             '<span class="badge bg-warning" style="font-size:0.6rem;">' + inst.state + '</span>';
+                            html += '<li><small>' + inst.name + ': ' + inst.ocpus + ' OCPU, ' + inst.memory + ' GB RAM ' + stateBadge + '</small></li>';
                         });
                         html += '</ul></div>';
                     }
@@ -678,8 +681,9 @@
                 <button type="button" class="btn btn-outline-danger w-100 btn-lg py-2 fw-bold rounded-3 shadow mb-2" onclick="stopLoop()">Stop Provisioning Loop</button>
 
                 <div class="alert alert-warning text-center small mb-3" role="alert">
-                    The loop stops automatically if it would exceed OCI Always Free limits
-                    (200 GB storage, 2 AMD Micro, or 1 ARM A1 with 2 OCPUs / 12 GB RAM) or after the configured max retry attempts.
+                    The loop runs continuously until an instance is created or you click Stop.
+                    It will also stop automatically if it would exceed OCI Always Free limits
+                    (200 GB storage, 2 AMD Micro, or 1 ARM A1 with 2 OCPUs / 12 GB RAM).
                 </div>
 
                 <h5 class="text-secondary mb-2 fw-bold">Live Output Activity Stream</h5>
