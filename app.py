@@ -315,28 +315,70 @@ def send_telegram_message(bot_token, chat_id, message):
 
 
 def get_oci_username(config, identity_client):
-    """Fetch the username/email from OCI Identity API using user OCID."""
+    """Fetch the username from OCI Identity API using user OCID.
+
+    OCI User model attributes (from docs):
+    - name: login username (required, unique)
+    - description: user description (required)
+    - email: email address (optional)
+    - db_user_name: DB username (optional)
+    """
     try:
         user_ocid = config.get('user')
         if not user_ocid:
+            add_log("Username detection skipped: no user OCID in config")
             return None
+
+        add_log(f"Fetching user info from Identity API...")
         user = identity_client.get_user(user_ocid=user_ocid).data
-        # Prefer email, fallback to name, then description
-        return (
-            getattr(user, 'email', None) or
-            getattr(user, 'name', None) or
-            getattr(user, 'description', None) or
-            user_ocid
-        )
-    except Exception:
+
+        # name = Console login username (most useful)
+        # email = Email if set
+        # description = Description field
+        name = getattr(user, 'name', None)
+        email = getattr(user, 'email', None)
+        desc = getattr(user, 'description', None)
+
+        # Build a readable identifier: prefer name, then email, then description
+        if name and email:
+            result = f"{name} ({email})"
+        elif name:
+            result = name
+        elif email:
+            result = email
+        elif desc and desc != user_ocid:
+            result = desc
+        else:
+            result = user_ocid
+
+        add_log(f"Detected OCI user: {result}")
+        return result
+
+    except oci.exceptions.ServiceError as e:
+        add_log(f"Identity API error (status {e.status}): {e.message}")
+        return None
+    except Exception as e:
+        add_log(f"Error fetching user info: {str(e)}")
         return None
 
 
-def run_automated_creation(config, account_config,
-                           compute_client, network_client, identity_client,
+def run_automated_creation(config, account_config, network_client, identity_client,
                            retry_delay=60, randomize_delay=False, random_min=25, random_max=60,
                            telegram_bot_token=None, telegram_chat_id=None):
     global automation_running
+
+    # Initialize oci_username early so it exists even if exceptions occur
+    oci_username = None
+    target_region = config.get('region', 'unknown')
+    target_name = account_config.get('display_name', 'AlwaysFree-Bot')
+
+    # Try to detect username before anything else
+    try:
+        oci_username = get_oci_username(config, identity_client)
+        if oci_username:
+            add_log(f"OCI username detected: {oci_username}")
+    except Exception as e:
+        add_log(f"Could not detect OCI username: {str(e)}")
 
     try:
         block_client = oci.core.BlockstorageClient(config)
@@ -346,14 +388,6 @@ def run_automated_creation(config, account_config,
         if not ok:
             add_log(f"Free tier limit check failed: {err}")
             return
-
-        target_region = config.get('region', 'unknown')
-        target_name = account_config.get('display_name', 'AlwaysFree-Bot')
-
-        # Detect OCI username
-        oci_username = get_oci_username(config, identity_client)
-        if oci_username:
-            add_log(f"OCI username detected: {oci_username}")
 
         add_log(f"Initializing infrastructure scan inside: {target_region}...")
 
