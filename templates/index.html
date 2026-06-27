@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>OCI Provisioner Portal</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <style>
+        body { background-color: #f4f6f9; }
+        .terminal-box {
+            background-color: #1e1e1e;
+            color: #39ff14;
+            font-family: 'Courier New', Courier, monospace;
+            height: 280px;
+            overflow-y: auto;
+            font-size: 0.85rem;
+            border-radius: 8px;
+            padding: 14px;
+            border: 1px solid #333;
+            box-shadow: inset 0 0 10px #000;
+        }
+        .all-os-mode-active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+            color: #fff !important;
+            border: none !important;
+            font-weight: bold !important;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+        .status-running { background-color: #39ff14; box-shadow: 0 0 8px #39ff14; }
+        .status-stopped { background-color: #ff4757; }
+    </style>
+    <script>
+        let currentLogOffset = 0;
+        let allOSMode = false;
+        let isLoopRunning = false;
+
+        function toggleShapeFields() {
+            let shape = document.getElementById("shapeSelector").value;
+            let cpuInput = document.getElementById("ocpus");
+            let ramInput = document.getElementById("memory");
+
+            if (shape === "VM.Standard.E2.1.Micro") {
+                cpuInput.value = 1; ramInput.value = 1;
+                cpuInput.disabled = true; ramInput.disabled = true;
+            } else {
+                cpuInput.value = 2; ramInput.value = 12;
+                cpuInput.disabled = false; ramInput.disabled = false;
+            }
+            document.getElementById("imageSelector").innerHTML =
+                "<option value=''>-- Click Scan OS Button Above --</option>";
+        }
+
+        function toggleAllOSMode() {
+            allOSMode = !allOSMode;
+            const btn = document.getElementById("allOSModeBtn");
+            const label = document.getElementById("osModeLabel");
+            if (allOSMode) {
+                btn.classList.add("all-os-mode-active");
+                btn.innerHTML = "&#128275; All-OS-Mode<br><small>ON</small>";
+                label.innerText = "All Operating Systems";
+                label.classList.add("text-warning");
+            } else {
+                btn.classList.remove("all-os-mode-active");
+                btn.innerHTML = "All-OS-Mode";
+                label.innerText = "Target Operating System Image";
+                label.classList.remove("text-warning");
+            }
+            document.getElementById("imageSelector").innerHTML =
+                "<option value=''>-- Click Scan OS Button Above --</option>";
+        }
+
+        function parseRawConfig() {
+            const rawText = document.getElementById("rawConfigInput").value;
+            const userMatch = rawText.match(/user\s*=\s*(ocid1\.user\.[^\s#\n,]+)/i);
+            const tenancyMatch = rawText.match(/tenancy\s*=\s*(ocid1\.tenancy\.[^\s#\n,]+)/i);
+            const fingerprintMatch = rawText.match(/fingerprint\s*=\s*([a-fA-F0-9:]{32,47})/i);
+            const regionMatch = rawText.match(/region\s*=\s*([a-zA-Z0-9-]+)/i);
+
+            if (userMatch) document.getElementById("user").value = userMatch[1].trim();
+            if (tenancyMatch) document.getElementById("tenancy").value = tenancyMatch[1].trim();
+            if (fingerprintMatch) document.getElementById("fingerprint").value = fingerprintMatch[1].trim();
+            if (regionMatch) document.getElementById("region").value = regionMatch[1].trim();
+        }
+
+        function handleKeyUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                document.getElementById("private_key").value = e.target.result;
+            };
+            reader.readAsText(file);
+        }
+
+        async function detectAvailableOS() {
+            parseRawConfig();
+            const btn = document.getElementById("scanOSBtn");
+            const selectEl = document.getElementById("imageSelector");
+
+            if (!document.getElementById("user").value || !document.getElementById("private_key").value) {
+                alert("Please paste credentials and upload your key file first.");
+                return;
+            }
+
+            btn.innerText = allOSMode ? "Scanning All OS Images..." : "Scanning Ubuntu Images...";
+            btn.disabled = true;
+
+            const payload = {
+                user: document.getElementById("user").value,
+                tenancy: document.getElementById("tenancy").value,
+                fingerprint: document.getElementById("fingerprint").value,
+                region: document.getElementById("region").value,
+                private_key: document.getElementById("private_key").value,
+                shape: document.getElementById("shapeSelector").value,
+                all_os_mode: allOSMode
+            };
+
+            try {
+                const response = await fetch('/api/list-images', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (result.success && result.images && result.images.length > 0) {
+                    selectEl.innerHTML = "";
+                    result.images.forEach(img => {
+                        let opt = document.createElement("option");
+                        opt.value = img.id;
+                        let label = img.name;
+                        if (allOSMode && img.os) {
+                            label = '[' + img.os + '] ' + img.name;
+                        }
+                        opt.innerText = label;
+                        selectEl.appendChild(opt);
+                    });
+                } else {
+                    alert("Could not find images: " + (result.error || "No architecture-matched images found."));
+                }
+            } catch (err) {
+                alert("Scan Request Error: " + err.message);
+            } finally {
+                btn.innerText = allOSMode ? "All-OS Scan" : "Ubuntu-Only OS";
+                btn.disabled = false;
+            }
+        }
+
+        async function setMaxBootVolume() {
+            parseRawConfig();
+            const btn = document.getElementById("bootMaxBtn");
+            const bootInput = document.getElementById("boot_volume_gb");
+
+            if (!document.getElementById("user").value || !document.getElementById("private_key").value) {
+                alert("Paste credentials and upload key first.");
+                return;
+            }
+
+            btn.innerText = "...";
+            btn.disabled = true;
+
+            const payload = {
+                user: document.getElementById("user").value,
+                tenancy: document.getElementById("tenancy").value,
+                fingerprint: document.getElementById("fingerprint").value,
+                region: document.getElementById("region").value,
+                private_key: document.getElementById("private_key").value
+            };
+
+            try {
+                const response = await fetch('/api/free-tier-status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    const remaining = result.usage.storage.remaining_gb;
+                    const maxBoot = Math.min(200, Math.max(50, remaining));
+                    bootInput.value = maxBoot;
+                    btn.innerText = "Max (" + maxBoot + " GB)";
+                    setTimeout(() => { btn.innerText = "Max"; }, 3000);
+                } else {
+                    alert("Could not detect storage: " + result.error);
+                    btn.innerText = "Max";
+                }
+            } catch (err) {
+                alert("Request Error: " + err.message);
+                btn.innerText = "Max";
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        let isRandomized = false;
+
+        function randomizeRetryDelay() {
+            isRandomized = !isRandomized;
+            const btn = document.querySelector("button[onclick='randomizeRetryDelay()']");
+            const hiddenInput = document.getElementById("randomize_delay");
+            const delayInput = document.getElementById("retry_delay");
+
+            if (isRandomized) {
+                hiddenInput.value = "true";
+                btn.innerHTML = "&#128293; Dynamic<br><small>25-60s</small>";
+                btn.classList.remove("btn-link", "text-primary");
+                btn.classList.add("btn-outline-danger");
+                btn.style.fontSize = "0.75rem";
+                btn.style.background = "linear-gradient(135deg, #ff6b6b 0%, #ffa502 50%, #ff4757 100%)";
+                btn.style.color = "#fff";
+                btn.style.border = "none";
+                btn.style.fontWeight = "bold";
+                delayInput.disabled = true;
+                delayInput.style.opacity = "0.5";
+                alert("Dynamic retry enabled: delays will randomly vary between 25-60 seconds to avoid OCI rate limits.");
+            } else {
+                hiddenInput.value = "false";
+                btn.innerHTML = "Randomize<br>between 25s to 60s";
+                btn.classList.remove("btn-outline-danger");
+                btn.classList.add("btn-link", "text-primary");
+                btn.style.fontSize = "0.85rem";
+                btn.style.background = "";
+                btn.style.color = "";
+                btn.style.border = "";
+                btn.style.fontWeight = "";
+                delayInput.disabled = false;
+                delayInput.style.opacity = "1";
+                delayInput.value = 60;
+                validateRetryDelay();
+            }
+        }
+
+        function validateRetryDelay() {
+            const delayInput = document.getElementById("retry_delay");
+            const warning = document.getElementById("retryWarning");
+            const val = parseInt(delayInput.value);
+
+            if (val < 30) {
+                warning.classList.remove("d-none");
+                warning.innerText = "&#9888; WARNING: Delays under 30s risk OCI rate limiting / abuse flags!";
+            } else if (val < 60) {
+                warning.classList.remove("d-none");
+                warning.innerText = "&#9888; Caution: Short delays may trigger OCI throttling.";
+            } else {
+                warning.classList.add("d-none");
+            }
+        }
+
+        async function checkFreeTierStatus() {
+            parseRawConfig();
+            const btn = document.getElementById("freeTierBtn");
+            const alertBox = document.getElementById("freeTierAlert");
+
+            if (!document.getElementById("user").value || !document.getElementById("private_key").value) {
+                alert("Paste credentials and upload key first.");
+                return;
+            }
+
+            btn.innerText = "Scanning Free Tier Usage...";
+            btn.disabled = true;
+
+            const payload = {
+                user: document.getElementById("user").value,
+                tenancy: document.getElementById("tenancy").value,
+                fingerprint: document.getElementById("fingerprint").value,
+                region: document.getElementById("region").value,
+                private_key: document.getElementById("private_key").value
+            };
+
+            try {
+                const response = await fetch('/api/free-tier-status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    const u = result.usage;
+                    let html = '<h6 class="fw-bold text-dark">OCI Always Free Quota Usage</h6>';
+
+                    // Storage
+                    const sColor = u.storage.percent >= 90 ? 'danger' : u.storage.percent >= 70 ? 'warning' : 'success';
+                    html += '<div class="mb-2"><b>Storage:</b> ' + u.storage.used_gb + ' / ' + u.storage.limit_gb + ' GB used <span class="badge bg-' + sColor + '">' + u.storage.percent + '%</span> <small class="text-muted">(' + u.storage.remaining_gb + ' GB free)</small></div>';
+                    html += '<div class="progress mb-3" style="height: 8px;"><div class="progress-bar bg-' + sColor + '" style="width: ' + u.storage.percent + '%"></div></div>';
+
+                    // Micro
+                    const mColor = u.micro.percent >= 100 ? 'danger' : u.micro.percent >= 50 ? 'warning' : 'success';
+                    html += '<div class="mb-2"><b>Micro Instances:</b> ' + u.micro.used + ' / ' + u.micro.limit + ' used <span class="badge bg-' + mColor + '">' + u.micro.percent + '%</span> <small class="text-muted">(' + u.micro.remaining + ' free)</small></div>';
+                    html += '<div class="progress mb-3" style="height: 8px;"><div class="progress-bar bg-' + mColor + '" style="width: ' + u.micro.percent + '%"></div></div>';
+
+                    // ARM
+                    const aCpuColor = u.arm.ocpu_percent >= 100 ? 'danger' : u.arm.ocpu_percent >= 70 ? 'warning' : 'success';
+                    const aMemColor = u.arm.memory_percent >= 100 ? 'danger' : u.arm.memory_percent >= 70 ? 'warning' : 'success';
+                    html += '<div class="mb-2"><b>ARM (A1.Flex) OCPUs:</b> ' + u.arm.used_ocpus + ' / ' + u.arm.limit_ocpus + ' used <span class="badge bg-' + aCpuColor + '">' + u.arm.ocpu_percent + '%</span> <small class="text-muted">(' + u.arm.remaining_ocpus + ' free)</small></div>';
+                    html += '<div class="progress mb-2" style="height: 8px;"><div class="progress-bar bg-' + aCpuColor + '" style="width: ' + u.arm.ocpu_percent + '%"></div></div>';
+                    html += '<div class="mb-2"><b>ARM (A1.Flex) RAM:</b> ' + u.arm.used_memory_gb + ' / ' + u.arm.limit_memory_gb + ' GB used <span class="badge bg-' + aMemColor + '">' + u.arm.memory_percent + '%</span> <small class="text-muted">(' + u.arm.remaining_memory_gb + ' GB free)</small></div>';
+                    html += '<div class="progress mb-2" style="height: 8px;"><div class="progress-bar bg-' + aMemColor + '" style="width: ' + u.arm.memory_percent + '%"></div></div>';
+
+                    if (u.arm.instances.length > 0) {
+                        html += '<div class="mt-2"><small class="text-muted">Active ARM instances:</small><ul class="mb-0">';
+                        u.arm.instances.forEach(inst => {
+                            html += '<li><small>' + inst.name + ': ' + inst.ocpus + ' OCPU, ' + inst.memory + ' GB RAM</small></li>';
+                        });
+                        html += '</ul></div>';
+                    }
+
+                    alertBox.className = "card mt-3 d-block";
+                    alertBox.style.cssText = "background:#f8fafc; border:1px solid #e2e8f0; box-shadow:none; border-radius:8px;";
+                    alertBox.innerHTML = html;
+                } else {
+                    alertBox.className = "card mt-3 d-block";
+                    alertBox.style.cssText = "background:#fef2f2; border:1px solid #fecaca; box-shadow:none; border-radius:8px;";
+                    alertBox.innerHTML = '<div class="card-body p-3 text-danger">Error: ' + result.error + '</div>';
+                }
+            } catch (err) {
+                alertBox.className = "card mt-3 d-block";
+                alertBox.style.cssText = "background:#fef2f2; border:1px solid #fecaca; box-shadow:none; border-radius:8px;";
+                alertBox.innerHTML = '<div class="card-body p-3 text-danger">Request Error: ' + err.message + '</div>';
+            } finally {
+                btn.innerText = "Check Free Tier Usage";
+                btn.disabled = false;
+            }
+        }
+
+        async function startFullyAutomatedLoop() {
+            parseRawConfig();
+            const imgId = document.getElementById("imageSelector").value;
+            if (!imgId) {
+                alert("Please scan and pick an Operating System from the list before starting.");
+                return;
+            }
+
+            const sshKey = document.getElementById("ssh_key").value.trim();
+            if (!sshKey) {
+                alert("Please paste your SSH public key.");
+                return;
+            }
+
+            const btn = document.getElementById("actionBtn");
+            btn.innerText = "Launching Provisioning Loop...";
+            btn.disabled = true;
+
+            const payload = {
+                user: document.getElementById("user").value,
+                tenancy: document.getElementById("tenancy").value,
+                fingerprint: document.getElementById("fingerprint").value,
+                region: document.getElementById("region").value,
+                private_key: document.getElementById("private_key").value,
+                shape: document.getElementById("shapeSelector").value,
+                image_id: imgId,
+                display_name: document.getElementById("display_name").value,
+                ocpus: document.getElementById("ocpus").value,
+                memory: document.getElementById("memory").value,
+                boot_volume_gb: document.getElementById("boot_volume_gb").value,
+                ssh_key: sshKey,
+                retry_delay: parseInt(document.getElementById("retry_delay").value) || 60,
+                randomize_delay: document.getElementById("randomize_delay").value === "true",
+                random_min: 25,
+                random_max: 60
+            };
+
+            try {
+                const response = await fetch('/api/auto-launch-loop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    alert("Continuous provisioning retry framework successfully initialized!");
+                    updateStatusIndicator(true);
+                } else {
+                    alert("Deployment failed: " + result.error);
+                }
+            } catch (err) {
+                alert("Request Error: " + err.message);
+            } finally {
+                btn.innerText = "Start Continuous Provisioning Loop";
+                btn.disabled = false;
+            }
+        }
+
+        async function stopLoop() {
+            try {
+                const res = await fetch('/api/stop-loop', { method: 'POST' });
+                const data = await res.json();
+                alert(data.message);
+                updateStatusIndicator(false);
+            } catch (err) {
+                alert("Stop Error: " + err.message);
+            }
+        }
+
+        async function fetchLogs() {
+            try {
+                const res = await fetch('/api/logs?offset=' + currentLogOffset);
+                const data = await res.json();
+                const logBox = document.getElementById("terminalLogs");
+
+                if (data && data.logs && data.logs.length > 0) {
+                    data.logs.forEach(line => {
+                        logBox.innerHTML += '<div>' + line + '</div>';
+                    });
+                    currentLogOffset = data.next_offset;
+                    logBox.scrollTop = logBox.scrollHeight;
+                }
+            } catch (e) {
+                console.error("Log fetch error", e);
+            }
+        }
+
+        async function checkAutomationStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                if (data.success) {
+                    updateStatusIndicator(data.running);
+                }
+            } catch (e) {
+                console.error("Status check error", e);
+            }
+        }
+
+        function updateStatusIndicator(running) {
+            isLoopRunning = running;
+            const indicator = document.getElementById("statusIndicator");
+            const statusText = document.getElementById("statusText");
+            if (running) {
+                indicator.className = "status-indicator status-running";
+                statusText.innerText = "Loop Running";
+                statusText.className = "text-success fw-bold";
+            } else {
+                indicator.className = "status-indicator status-stopped";
+                statusText.innerText = "Loop Stopped";
+                statusText.className = "text-danger fw-bold";
+            }
+        }
+
+        window.onload = () => {
+            fetchLogs();
+            setInterval(fetchLogs, 2000);
+            checkAutomationStatus();
+            setInterval(checkAutomationStatus, 5000);
+        };
+    </script>
+</head>
+<body class="p-4">
+    <div class="container" style="max-width: 680px;">
+        <div class="card shadow border-0 rounded-4 mb-4">
+            <div class="card-header bg-dark text-white p-3 rounded-top-4">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h4 class="mb-0 text-center text-warning fw-bold flex-grow-1">OCI Live-Track Provisioner Portal</h4>
+                    <div class="d-flex align-items-center" style="white-space: nowrap;">
+                        <span id="statusIndicator" class="status-indicator status-stopped"></span>
+                        <span id="statusText" class="text-danger fw-bold small">Loop Stopped</span>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body p-4">
+
+                <div class="bg-dark p-3 rounded-3 mb-4 text-white">
+                    <h5 class="text-warning">1. Drop Credentials & Config File</h5>
+                    <div class="mb-3">
+                        <label class="form-label text-white-50">Paste raw text configuration block:</label>
+                        <textarea id="rawConfigInput" class="form-control bg-secondary text-white border-0" rows="3" placeholder="Paste config text here..." oninput="parseRawConfig()"></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label text-white-50">Upload downloaded (.pem) Private Key file:</label>
+                        <input type="file" class="form-control bg-secondary text-white border-0" accept=".pem" onchange="handleKeyUpload(event)">
+                    </div>
+
+                    <button type="button" id="freeTierBtn" class="btn btn-outline-success w-100 fw-bold btn-sm mb-2" onclick="checkFreeTierStatus()">Check Free Tier Usage</button>
+                    <button type="button" id="scanOSBtn" class="btn btn-outline-info w-100 fw-bold btn-sm" onclick="detectAvailableOS()">Ubuntu-Only OS</button>
+                    <div id="freeTierAlert" class="mt-3 d-none" style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px;"></div>
+                </div>
+
+                <div class="bg-warning-subtle p-3 mb-4 rounded-3 border border-warning-subtle">
+                    <h5 class="text-dark fw-bold">2. Target Resource & OS Setup</h5>
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label class="form-label fw-bold text-primary">Retry Delay (seconds)</label>
+                            <div class="d-flex align-items-center gap-2">
+                                <input type="number" id="retry_delay" class="form-control border-primary" value="60" min="10" max="3600" onchange="validateRetryDelay()" style="flex:1;">
+                                <button type="button" class="btn btn-link text-primary fw-bold p-0" style="font-size:0.85rem; text-decoration:none; white-space:nowrap;" onclick="randomizeRetryDelay()">Randomize<br>between 25s to 60s</button>
+                            </div>
+                            <div id="retryWarning" class="form-text text-danger fw-bold d-none">&#9888; Warning: Low delay may trigger OCI rate limits or abuse detection!</div>
+                        </div>
+                        <div class="col-md-12 mb-3">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <label id="osModeLabel" class="form-label fw-bold text-primary">Target Operating System Image</label>
+                                <button type="button" id="allOSModeBtn" class="btn btn-outline-primary btn-sm fw-bold" style="font-size:0.75rem; padding: 2px 10px;" onclick="toggleAllOSMode()">All-OS-Mode</button>
+                            </div>
+                            <select id="imageSelector" class="form-select bg-white fw-bold border-primary" required>
+                                <option value="">-- Click Scan OS Button Above --</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6 mb-2">
+                            <label class="form-label">Instance Tier Profile</label>
+                            <select id="shapeSelector" class="form-select" onchange="toggleShapeFields()" required>
+                                <option value="VM.Standard.A1.Flex">Ampere ARM Always Free (Flexible)</option>
+                                <option value="VM.Standard.E2.1.Micro">AMD Standard Micro Always Free</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6 mb-2">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <label class="form-label mb-0">Boot Volume Size (GB)</label>
+                                <button type="button" id="bootMaxBtn" class="btn btn-link text-primary fw-bold p-0" style="font-size:0.85rem; text-decoration:none;" onclick="setMaxBootVolume()">Max</button>
+                            </div>
+                            <input type="number" id="boot_volume_gb" class="form-control" value="50" min="50" max="200">
+                        </div>
+                        <div class="col-md-4 mb-2">
+                            <label class="form-label">VM Name Tag</label>
+                            <input type="text" id="display_name" class="form-control" value="AlwaysFree-Bot">
+                        </div>
+                        <div class="col-md-4 mb-2">
+                            <label class="form-label">OCPUs</label>
+                            <input type="number" id="ocpus" class="form-control" value="2">
+                        </div>
+                        <div class="col-md-4 mb-2">
+                            <label class="form-label">RAM (GB)</label>
+                            <input type="number" id="memory" class="form-control" value="12">
+                        </div>
+                        <div class="col-12 mb-2">
+                            <label class="form-label">SSH Public Key</label>
+                            <textarea id="ssh_key" class="form-control" rows="3" placeholder="ssh-rsa AAAAB3... user@host"></textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <input type="hidden" id="user"><input type="hidden" id="tenancy">
+                <input type="hidden" id="fingerprint"><input type="hidden" id="region">
+                <input type="hidden" id="randomize_delay" value="false">
+                <textarea id="private_key" style="display:none;"></textarea>
+
+                <button type="button" id="actionBtn" class="btn btn-primary w-100 btn-lg py-3 fw-bold rounded-3 shadow mb-2" onclick="startFullyAutomatedLoop()">Start Continuous Provisioning Loop</button>
+                <button type="button" class="btn btn-outline-danger w-100 btn-lg py-2 fw-bold rounded-3 shadow mb-2" onclick="stopLoop()">Stop Provisioning Loop</button>
+
+                <div class="alert alert-warning text-center small mb-3" role="alert">
+                    The loop stops automatically if it would exceed OCI Always Free limits
+                    (200 GB storage, 2 AMD Micro, or 1 ARM A1 with 2 OCPUs / 12 GB RAM) or after the configured max retry attempts.
+                </div>
+
+                <h5 class="text-secondary mb-2 fw-bold">Live Output Activity Stream</h5>
+                <div id="terminalLogs" class="terminal-box"></div>
+
+            </div>
+        </div>
+    </div>
+</body>
+</html>
