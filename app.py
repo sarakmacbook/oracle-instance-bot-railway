@@ -330,7 +330,7 @@ def get_oci_username(config, identity_client):
             return None
 
         add_log(f"Fetching user info from Identity API...")
-        user = identity_client.get_user(user_ocid=user_ocid).data
+        user = identity_client.get_user(user_id=user_ocid).data
 
         # name = Console login username (most useful)
         # email = Email if set
