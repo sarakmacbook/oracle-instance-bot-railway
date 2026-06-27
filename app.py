@@ -362,7 +362,7 @@ def get_oci_username(config, identity_client):
         return None
 
 
-def run_automated_creation(config, account_config, network_client, identity_client,
+def run_automated_creation(config, account_config, compute_client, network_client, identity_client,
                            retry_delay=60, randomize_delay=False, random_min=25, random_max=60,
                            telegram_bot_token=None, telegram_chat_id=None):
     global automation_running
