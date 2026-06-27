@@ -190,7 +190,9 @@ def check_free_tier_limits(config, account_config, compute_client, block_client,
         total_ocpus = 0
         total_memory = 0
         for inst in instances:
-            if inst.shape == 'VM.Standard.A1.Flex' and inst.lifecycle_state in active_states:
+            # Count ALL non-TERMINATED ARM instances (including STOPPED)
+            # Free tier quota counts stopped instances too
+            if inst.shape == 'VM.Standard.A1.Flex' and inst.lifecycle_state != 'TERMINATED':
                 cfg = inst.shape_config
                 if cfg:
                     total_ocpus += int(cfg.ocpus or 0)
@@ -241,12 +243,12 @@ def get_free_tier_usage(config, compute_client, block_client, identity_client):
     )
     micro_remaining = max(0, 2 - micro_count)
 
-    # ARM (A1.Flex) usage
+    # ARM (A1.Flex) usage - count ALL non-TERMINATED (including STOPPED)
     total_ocpus = 0
     total_memory = 0
     arm_instances = []
     for inst in instances:
-        if inst.shape == 'VM.Standard.A1.Flex' and inst.lifecycle_state in active_states:
+        if inst.shape == 'VM.Standard.A1.Flex' and inst.lifecycle_state != 'TERMINATED':
             cfg = inst.shape_config
             if cfg:
                 ocpus = int(cfg.ocpus or 0)
@@ -256,7 +258,8 @@ def get_free_tier_usage(config, compute_client, block_client, identity_client):
                 arm_instances.append({
                     'name': inst.display_name,
                     'ocpus': ocpus,
-                    'memory': memory
+                    'memory': memory,
+                    'state': inst.lifecycle_state
                 })
 
     ocpus_remaining = max(0, 2 - total_ocpus)
@@ -461,13 +464,12 @@ def run_automated_creation(config, account_config, compute_client, network_clien
             display_name=target_name
         )
 
-        add_log(f"Launching provisioning loop for '{target_name}' "
-                f"(max {MAX_ATTEMPTS} attempts)...")
+        add_log(f"Launching provisioning loop for '{target_name}'...")
 
         attempts = 0
         success = False
 
-        while attempts < MAX_ATTEMPTS:
+        while True:
             attempts += 1
 
             if stop_event.is_set():
@@ -519,14 +521,14 @@ def run_automated_creation(config, account_config, compute_client, network_clien
                 add_log("Provisioning loop stopped while waiting.")
                 break
 
-        if not success and attempts >= MAX_ATTEMPTS:
-            add_log(f"Reached maximum attempts ({MAX_ATTEMPTS}). Stopping loop.")
+        if not success:
+            add_log("Provisioning loop ended without success.")
             if telegram_bot_token and telegram_chat_id:
                 user_line = f"<b>User:</b> {oci_username}\n" if oci_username else ""
                 tg_msg = (
-                    f"&#10060; <b>OCI Provisioner Failed</b>\n\n"
+                    f"&#10060; <b>OCI Provisioner Stopped</b>\n\n"
                     f"{user_line}"
-                    f"Reached maximum attempts ({MAX_ATTEMPTS}) without success.\n"
+                    f"Loop stopped after {attempts} attempts without success.\n"
                     f"<b>Region:</b> {config.get('region', 'unknown')}"
                 )
                 send_telegram_message(telegram_bot_token, telegram_chat_id, tg_msg)
