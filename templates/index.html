@@ -96,6 +96,16 @@
                 "<option value=''>-- Click Scan OS Button Above --</option>";
         }
 
+        function handleSSHUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                document.getElementById("ssh_key").value = e.target.result.trim();
+            };
+            reader.readAsText(file);
+        }
+
         function parseRawConfig() {
             const rawText = document.getElementById("rawConfigInput").value;
             const userMatch = rawText.match(/user\s*=\s*(ocid1\.user\.[^\s#\n,]+)/i);
@@ -666,7 +676,11 @@
                             <input type="number" id="memory" class="form-control" value="12">
                         </div>
                         <div class="col-12 mb-2">
-                            <label class="form-label">SSH Public Key</label>
+                            <div class="d-flex justify-content-between align-items-center">
+                                <label class="form-label">SSH Public Key</label>
+                                <input type="file" id="sshFileInput" class="d-none" accept=".pub,.txt" onchange="handleSSHUpload(event)">
+                                <button type="button" class="btn btn-link text-primary fw-bold p-0" style="font-size:0.85rem; text-decoration:none;" onclick="document.getElementById('sshFileInput').click()">&#128193; Upload .pub</button>
+                            </div>
                             <textarea id="ssh_key" class="form-control" rows="3" placeholder="ssh-rsa AAAAB3... user@host"></textarea>
                         </div>
                     </div>
