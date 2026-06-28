@@ -505,11 +505,23 @@ def run_automated_creation(config, account_config, compute_client, network_clien
 
             except oci.exceptions.ServiceError as e:
                 msg = str(e)
-                if "Out of capacity" in msg or e.status in (500, 429):
+                if "Out of capacity" in msg or e.status in (500, 429, 503, 504):
                     user_info = f" [user: {oci_username}]" if oci_username else ""
                     add_log(f"Capacity busy in '{target_region}'.{user_info} Retrying...")
                 else:
                     add_log(f"OCI API error: {e.message}")
+                    break
+            except (ConnectionError, OSError) as e:
+                # Handle connection drops, timeouts, DNS failures as retryable
+                user_info = f" [user: {oci_username}]" if oci_username else ""
+                add_log(f"Connection issue in '{target_region}': {type(e).__name__}.{user_info} Retrying...")
+            except Exception as e:
+                msg = str(e)
+                if "Remote end closed connection" in msg or "Connection aborted" in msg or "timeout" in msg.lower():
+                    user_info = f" [user: {oci_username}]" if oci_username else ""
+                    add_log(f"Network hiccup in '{target_region}': connection dropped.{user_info} Retrying...")
+                else:
+                    add_log(f"Automation engine failure: {msg}")
                     break
 
             actual_delay = retry_delay
@@ -534,13 +546,17 @@ def run_automated_creation(config, account_config, compute_client, network_clien
                 send_telegram_message(telegram_bot_token, telegram_chat_id, tg_msg)
 
     except Exception as e:
-        add_log(f"Automation engine failure: {str(e)}")
+        msg = str(e)
+        if "Remote end closed connection" in msg or "Connection aborted" in msg:
+            add_log(f"Network connection lost. Loop ended.")
+        else:
+            add_log(f"Automation engine failure: {msg}")
         if telegram_bot_token and telegram_chat_id:
             user_line = f"<b>User:</b> {oci_username}\n" if oci_username else ""
             tg_msg = (
                 f"&#10060; <b>OCI Provisioner Error</b>\n\n"
                 f"{user_line}"
-                f"Automation engine failure:\n{str(e)}"
+                f"Automation engine failure:\n{msg[:200]}"
             )
             send_telegram_message(telegram_bot_token, telegram_chat_id, tg_msg)
 
