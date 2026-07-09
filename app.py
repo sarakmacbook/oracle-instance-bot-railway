@@ -597,10 +597,6 @@ def run_automated_creation(config, account_config, compute_client, network_clien
         while True:
             attempts += 1
 
-            if attempts > MAX_ATTEMPTS:
-                add_log(f"Reached MAX_ATTEMPTS ({MAX_ATTEMPTS}). Stopping loop.")
-                break
-
             if stop_event.is_set():
                 add_log("Provisioning loop stopped by user.")
                 break
@@ -666,7 +662,7 @@ def run_automated_creation(config, account_config, compute_client, network_clien
                 break
 
         if not success:
-            add_log("Provisioning loop ended without success.")
+            add_log(f"Provisioning loop ended after {attempts} attempts.")
             if telegram_bot_token and telegram_chat_id:
                 user_line = f"<b>User:</b> {oci_username}\n" if oci_username else ""
                 # FIXED: Use Phnom Penh time in Telegram message
@@ -674,7 +670,7 @@ def run_automated_creation(config, account_config, compute_client, network_clien
                 tg_msg = (
                     f"&#10060; <b>OCI Provisioner Stopped</b>\n\n"
                     f"{user_line}"
-                    f"Loop stopped after {attempts} attempts without success.\n"
+                    f"Loop stopped after {attempts} attempts.\n"
                     f"<b>Region:</b> {config.get('region', 'unknown')}\n"
                     f"<b>Time:</b> {pp_time} (Phnom Penh)"
                 )
