@@ -2,6 +2,7 @@ import os
 import re
 import time
 import random
+import secrets
 import threading
 import datetime
 import functools
@@ -841,6 +842,149 @@ def test_telegram():
     if ok:
         return jsonify({'success': True, 'message': 'Test message sent successfully'})
     return jsonify({'success': False, 'error': err})
+
+
+# ---- Telegram Connect-via-Link ----
+# Stores pending connect sessions: { connect_code: { 'bot_token': ..., 'expires': timestamp } }
+connect_sessions = {}
+connect_sessions_lock = threading.Lock()
+
+
+def _tg_api_call(bot_token, method, payload=None):
+    """Helper: call Telegram Bot API and return (success, data_or_error)."""
+    url = f"https://api.telegram.org/bot{bot_token}/{method}"
+    try:
+        resp = requests.post(url, json=payload or {}, timeout=10)
+        data = resp.json()
+        if data.get("ok"):
+            return True, data.get("result", [])
+        return False, data.get("description", "Unknown Telegram error")
+    except Exception as e:
+        return False, str(e)
+
+
+@app.route('/api/tg-connect/start', methods=['POST'])
+@require_auth
+def tg_connect_start():
+    """Start the link-connect flow.
+
+    Input:  { bot_token: "..." }
+    Output: { success, connect_code, bot_username, connect_url }
+
+    The connect_url is t.me/<bot>?start=<code>. When the user opens it and
+    hits Start, the bot receives a /start message containing the code.
+    The frontend then polls /api/tg-connect/poll to find the chat_id.
+    """
+    data = request.json or {}
+    bot_token = data.get('bot_token', '').strip()
+    if not bot_token:
+        return jsonify({'success': False, 'error': 'Bot token is required'})
+
+    # Verify the bot token is valid by calling getMe
+    ok, result = _tg_api_call(bot_token, 'getMe')
+    if not ok:
+        return jsonify({'success': False, 'error': f'Invalid bot token: {result}'})
+
+    bot_info = result if isinstance(result, dict) else {}
+    bot_username = bot_info.get('username', '')
+    if not bot_username:
+        return jsonify({'success': False, 'error': 'Could not determine bot username'})
+
+    # Generate a short unique connect code
+    connect_code = secrets.token_hex(4)  # 8-char hex
+    expires = time.time() + 300  # 5-minute expiry
+
+    with connect_sessions_lock:
+        # Clean up expired sessions
+        expired = [k for k, v in connect_sessions.items() if v['expires'] < time.time()]
+        for k in expired:
+            del connect_sessions[k]
+        connect_sessions[connect_code] = {
+            'bot_token': bot_token,
+            'bot_username': bot_username,
+            'expires': expires
+        }
+
+    connect_url = f"https://t.me/{bot_username}?start={connect_code}"
+
+    return jsonify({
+        'success': True,
+        'connect_code': connect_code,
+        'bot_username': bot_username,
+        'connect_url': connect_url,
+        'expires_in': 300
+    })
+
+
+@app.route('/api/tg-connect/poll', methods=['POST'])
+@require_auth
+def tg_connect_poll():
+    """Poll for the user's chat_id after they open the connect link.
+
+    Input:  { bot_token: "...", connect_code: "..." }
+    Output: { success, chat_id, chat_first_name, chat_username } or
+            { success: false, waiting: true } if not found yet
+    """
+    data = request.json or {}
+    bot_token = data.get('bot_token', '').strip()
+    connect_code = data.get('connect_code', '').strip()
+    if not bot_token or not connect_code:
+        return jsonify({'success': False, 'error': 'Bot token and connect_code required'})
+
+    # Check session validity
+    with connect_sessions_lock:
+        session = connect_sessions.get(connect_code)
+        if not session:
+            return jsonify({'success': False, 'error': 'Invalid or expired connect code'})
+        if session['expires'] < time.time():
+            del connect_sessions[connect_code]
+            return jsonify({'success': False, 'error': 'Connect code expired. Please try again.'})
+        if session['bot_token'] != bot_token:
+            return jsonify({'success': False, 'error': 'Bot token mismatch' })
+
+    # Fetch recent updates from Telegram, look for /start <connect_code>
+    ok, result = _tg_api_call(bot_token, 'getUpdates', {'timeout': 0})
+    if not ok:
+        return jsonify({'success': False, 'error': f'Failed to get updates: {result}'})
+
+    for update in result:
+        message = update.get('message') or update.get('edited_message')
+        if not message:
+            continue
+        text = message.get('text', '')
+        chat = message.get('chat', {})
+        chat_id = chat.get('id')
+
+        # Match: "/start <connect_code>"
+        if text.startswith('/start ') and connect_code in text:
+            chat_first_name = chat.get('first_name', '')
+            chat_username = chat.get('username', '')
+            chat_type = chat.get('type', '')
+
+            # Send a confirmation message to the user via the bot
+            pp_time = format_phnom_penh_time()
+            send_telegram_message(
+                bot_token, str(chat_id),
+                f"&#9989; <b>OCI Provisioner Connected!</b>\n\n"
+                f"Hi {chat_first_name}! Your chat ID <code>{chat_id}</code> has been linked.\n\n"
+                f"You will receive alerts here when your instance is provisioned.\n"
+                f"<b>Server Time:</b> {pp_time} (Phnom Penh)"
+            )
+
+            # Clean up the session
+            with connect_sessions_lock:
+                connect_sessions.pop(connect_code, None)
+
+            return jsonify({
+                'success': True,
+                'chat_id': str(chat_id),
+                'chat_first_name': chat_first_name,
+                'chat_username': chat_username,
+                'chat_type': chat_type
+            })
+
+    # Not found yet — keep waiting
+    return jsonify({'success': False, 'waiting': True, 'message': 'Waiting for user to open link...'})
 
 
 @app.route('/api/send-telegram', methods=['POST'])
