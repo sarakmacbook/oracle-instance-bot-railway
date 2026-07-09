@@ -9,6 +9,20 @@ import requests
 from flask import Flask, render_template, request, jsonify, Response
 import oci
 
+# ---- Timezone Configuration (Phnom Penh - ICT, UTC+7) ----
+from zoneinfo import ZoneInfo
+PHNOM_PENH_TZ = ZoneInfo("Asia/Phnom_Penh")
+
+def get_phnom_penh_time():
+    """Return current time in Phnom Penh timezone (ICT, UTC+7)."""
+    return datetime.datetime.now(PHNOM_PENH_TZ)
+
+def format_phnom_penh_time(dt=None):
+    """Format datetime as string in Phnom Penh timezone."""
+    if dt is None:
+        dt = get_phnom_penh_time()
+    return dt.strftime('%Y-%m-%d %H:%M:%S')
+
 app = Flask(__name__)
 
 # ---- Security Headers ----
@@ -38,7 +52,7 @@ stop_event = threading.Event()
 
 
 def add_log(message):
-    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+    timestamp = format_phnom_penh_time()  # FIXED: Use Phnom Penh timezone
     line = f"[{timestamp}] {message}"
     print(line)
     with logs_lock:
@@ -99,9 +113,11 @@ def list_available_images():
 
         images = compute.list_images(**kwargs).data
 
+        # FIXED: Use Phnom Penh timezone for image sorting
+        min_dt = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc).astimezone(PHNOM_PENH_TZ)
         images = sorted(
             images,
-            key=lambda i: i.time_created if i.time_created else datetime.datetime.min,
+            key=lambda i: i.time_created.astimezone(PHNOM_PENH_TZ) if i.time_created else min_dt,
             reverse=True
         )
 
@@ -472,6 +488,10 @@ def run_automated_creation(config, account_config, compute_client, network_clien
         while True:
             attempts += 1
 
+            if attempts > MAX_ATTEMPTS:
+                add_log(f"Reached MAX_ATTEMPTS ({MAX_ATTEMPTS}). Stopping loop.")
+                break
+
             if stop_event.is_set():
                 add_log("Provisioning loop stopped by user.")
                 break
@@ -486,6 +506,8 @@ def run_automated_creation(config, account_config, compute_client, network_clien
                     instance_name = account_config.get('display_name', 'AlwaysFree-Bot')
                     shape = account_config.get('shape', 'Unknown')
                     region = config.get('region', 'unknown')
+                    # FIXED: Use Phnom Penh time in Telegram message
+                    pp_time = format_phnom_penh_time()
                     user_line = f"<b>User:</b> {oci_username}\n" if oci_username else ""
                     tg_msg = (
                         f"&#9989; <b>OCI Provisioner Success!</b>\n\n"
@@ -493,6 +515,7 @@ def run_automated_creation(config, account_config, compute_client, network_clien
                         f"<b>Shape:</b> {shape}\n"
                         f"<b>Region:</b> {region}\n"
                         f"{user_line}"
+                        f"<b>Time:</b> {pp_time} (Phnom Penh)\n"
                         f"<b>Status:</b> Running\n\n"
                         f"Your Always Free instance has been successfully provisioned!"
                     )
@@ -537,11 +560,14 @@ def run_automated_creation(config, account_config, compute_client, network_clien
             add_log("Provisioning loop ended without success.")
             if telegram_bot_token and telegram_chat_id:
                 user_line = f"<b>User:</b> {oci_username}\n" if oci_username else ""
+                # FIXED: Use Phnom Penh time in Telegram message
+                pp_time = format_phnom_penh_time()
                 tg_msg = (
                     f"&#10060; <b>OCI Provisioner Stopped</b>\n\n"
                     f"{user_line}"
                     f"Loop stopped after {attempts} attempts without success.\n"
-                    f"<b>Region:</b> {config.get('region', 'unknown')}"
+                    f"<b>Region:</b> {config.get('region', 'unknown')}\n"
+                    f"<b>Time:</b> {pp_time} (Phnom Penh)"
                 )
                 send_telegram_message(telegram_bot_token, telegram_chat_id, tg_msg)
 
@@ -553,10 +579,13 @@ def run_automated_creation(config, account_config, compute_client, network_clien
             add_log(f"Automation engine failure: {msg}")
         if telegram_bot_token and telegram_chat_id:
             user_line = f"<b>User:</b> {oci_username}\n" if oci_username else ""
+            # FIXED: Use Phnom Penh time in Telegram message
+            pp_time = format_phnom_penh_time()
             tg_msg = (
                 f"&#10060; <b>OCI Provisioner Error</b>\n\n"
                 f"{user_line}"
-                f"Automation engine failure:\n{msg[:200]}"
+                f"Automation engine failure:\n{msg[:200]}\n"
+                f"<b>Time:</b> {pp_time} (Phnom Penh)"
             )
             send_telegram_message(telegram_bot_token, telegram_chat_id, tg_msg)
 
@@ -607,6 +636,12 @@ def auto_launch():
     global automation_running
     data = request.json or {}
     config = build_config(data)
+
+    # Validate that all required fields are present
+    required_fields = ['user', 'fingerprint', 'tenancy', 'region', 'key_content']
+    missing = [f for f in required_fields if not config.get(f)]
+    if missing:
+        return jsonify({'success': False, 'error': f"Missing required OCI fields: {', '.join(missing)}. Please paste your full OCI config text and upload your private key."})
 
     try:
         oci.config.validate_config(config)
@@ -689,9 +724,14 @@ def test_telegram():
     chat_id = data.get('chat_id', '').strip()
     if not bot_token or not chat_id:
         return jsonify({'success': False, 'error': 'Bot token and chat ID are required'})
+    # FIXED: Use Phnom Penh time in test message
+    pp_time = format_phnom_penh_time()
     ok, err = send_telegram_message(
         bot_token, chat_id,
-        "&#9989; <b>OCI Instance loop Connected</b>\n\nYour Telegram alerts are now active. You will receive notifications when provisioning succeeds or fails."
+        f"&#9989; <b>OCI Instance loop Connected</b>\n\n"
+        f"Your Telegram alerts are now active.\n"
+        f"<b>Server Time:</b> {pp_time} (Phnom Penh, ICT)\n\n"
+        f"You will receive notifications when provisioning succeeds or fails."
     )
     if ok:
         return jsonify({'success': True, 'message': 'Test message sent successfully'})
