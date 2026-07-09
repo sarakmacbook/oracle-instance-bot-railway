@@ -95,6 +95,115 @@ def home():
         return f"Flask Template Error: {str(e)}", 500
 
 
+@app.route('/api/test-config', methods=['POST'])
+@require_auth
+def test_oci_config():
+    """Pre-flight test: validates OCI config and attempts a real API call.
+
+    This endpoint catches the common 401 'Failed to verify HTTP(S) Signature'
+    error early, with a human-readable explanation of what's wrong.
+    """
+    data = request.json or {}
+    config = build_config(data)
+
+    # Step 1: Check required fields
+    required_fields = ['user', 'fingerprint', 'tenancy', 'region', 'key_content']
+    missing = [f for f in required_fields if not config.get(f)]
+    if missing:
+        return jsonify({
+            'success': False,
+            'error': f"Missing required fields: {', '.join(missing)}"
+        })
+
+    # Step 2: Format validation
+    try:
+        oci.config.validate_config(config)
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f"Config format invalid: {e}",
+            'hint': "Check that user/fingerprint/tenancy are valid OCIDs (ocid1...) and region is a valid OCI region identifier."
+        })
+
+    # Step 3: Verify private key loads
+    try:
+        import oci.signer
+        signer = oci.signer.Signer(
+            tenancy=config['tenancy'],
+            user=config['user'],
+            fingerprint=config['fingerprint'],
+            private_key_file_location=None,
+            pass_phrase=None,
+            private_key_content=config.get('key_content')
+        )
+    except Exception as e:
+        err_msg = str(e).lower()
+        if 'passphrase' in err_msg or 'password' in err_msg:
+            return jsonify({
+                'success': False,
+                'error': f"Private key requires a passphrase: {e}",
+                'hint': "Your private key is encrypted with a passphrase. This app does not support passphrase-protected keys. Regenerate the key without a passphrase."
+            })
+        return jsonify({
+            'success': False,
+            'error': f"Private key could not be loaded: {e}",
+            'hint': "Make sure you pasted the FULL private key including BEGIN/END lines. Format: -----BEGIN RSA PRIVATE KEY----- ... -----END RSA PRIVATE KEY-----"
+        })
+
+    # Step 4: Real API call — this is where 401 "Failed to verify HTTP(S) Signature" happens
+    try:
+        identity_client = oci.identity.IdentityClient(config)
+        ads = identity_client.list_availability_domains(
+            compartment_id=config['tenancy']
+        ).data
+
+        # If we got here, auth works!
+        ad_names = [ad.name for ad in ads]
+        return jsonify({
+            'success': True,
+            'message': 'OCI config verified and authenticated successfully!',
+            'region': config['region'],
+            'availability_domains': ad_names
+        })
+
+    except oci.exceptions.ServiceError as e:
+        if e.status == 401 and 'Failed to verify' in str(e.message):
+            return jsonify({
+                'success': False,
+                'error': '401 NotAuthenticated: Failed to verify the HTTP(S) Signature',
+                'hint': 'The API key signature does not match. This means one of these is wrong:\n'
+                        '1. The private key you pasted does NOT match the public key registered in OCI Console.\n'
+                        '2. The fingerprint is from a DIFFERENT API key.\n'
+                        '3. The User OCID does not match the user who owns this API key.\n\n'
+                        'FIX: Go to OCI Console → Identity → Users → your user → API Keys.\n'
+                        '   - Click "Add API Key" → generate a NEW key pair.\n'
+                        '   - Copy the NEW private key and paste it here.\n'
+                        '   - Copy the NEW fingerprint and config snippet from the dialog.'
+            })
+        elif e.status == 401:
+            return jsonify({
+                'success': False,
+                'error': f'401: {e.message}',
+                'hint': 'Authentication failed. Your tenancy or user OCID may be wrong.'
+            })
+        elif e.status == 404:
+            return jsonify({
+                'success': False,
+                'error': f'404: {e.message}',
+                'hint': 'Not found. The tenancy OCID may be wrong, or the user does not exist in this region.'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': f'OCI API error (HTTP {e.status}): {e.message}'
+            })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Unexpected error: {type(e).__name__}: {e}'
+        })
+
+
 @app.route('/api/list-images', methods=['POST'])
 @require_auth
 def list_available_images():
