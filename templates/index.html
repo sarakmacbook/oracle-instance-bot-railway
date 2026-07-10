@@ -828,15 +828,16 @@
                     <div class="mb-2">
                         <label class="form-label text-white-50">Paste raw text configuration block:</label>
                         <textarea id="rawConfigInput" class="form-control bg-secondary text-white border-0" style="font-family:monospace; font-size:0.8rem;" rows="4" placeholder="[DEFAULT]&#10;user=ocid1.user.oc1..xxxxxxxxxx&#10;fingerprint=aa:bb:cc:dd:...&#10;tenancy=ocid1.tenancy.oc1..xxxxxxxxxx&#10;region=ap-chuncheon-1&#10;key_file=~/.oci/oci_api_key.pem" oninput="parseRawConfig()"></textarea>
-                    </div>
-                    <div class="row g-2 mb-2">
-                        <div class="col">
-                            <label class="form-label text-white-50 small mb-1">&#128193; Upload Config (.txt):</label>
-                            <input type="file" id="configFileInput" class="form-control form-control-sm bg-secondary text-white border-0" accept=".txt,.config,.conf" onchange="handleConfigFileUpload(event)">
-                        </div>
-                        <div class="col">
-                            <label class="form-label text-white-50 small mb-1">&#128273; Upload Private Key (.pem):</label>
-                            <input type="file" id="keyFileInput" class="form-control form-control-sm bg-secondary text-white border-0" accept=".pem,.txt,.key" onchange="handleKeyUpload(event)">
+                        <!-- Upload .txt button right under the paste textarea -->
+                        <div class="d-flex gap-2 mt-1">
+                            <label class="btn btn-outline-light btn-sm flex-grow-1 mb-0" style="cursor:pointer;">
+                                &#128193; Upload .txt Config File
+                                <input type="file" id="configFileInput" class="d-none" accept=".txt,.config,.conf" onchange="handleConfigFileUpload(event)">
+                            </label>
+                            <label class="btn btn-outline-warning btn-sm mb-0" style="cursor:pointer;">
+                                &#128273; Upload .pem Key
+                                <input type="file" id="keyFileInput" class="d-none" accept=".pem,.txt,.key" onchange="handleKeyUpload(event)">
+                            </label>
                         </div>
                     </div>
                     <div id="configStatusBox" class="small mt-1"></div>
