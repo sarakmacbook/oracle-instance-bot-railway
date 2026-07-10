@@ -828,14 +828,14 @@
                     <div class="mb-2">
                         <label class="form-label text-white-50">Paste raw text configuration block:</label>
                         <textarea id="rawConfigInput" class="form-control bg-secondary text-white border-0" style="font-family:monospace; font-size:0.8rem;" rows="4" placeholder="[DEFAULT]&#10;user=ocid1.user.oc1..xxxxxxxxxx&#10;fingerprint=aa:bb:cc:dd:...&#10;tenancy=ocid1.tenancy.oc1..xxxxxxxxxx&#10;region=ap-chuncheon-1&#10;key_file=~/.oci/oci_api_key.pem" oninput="parseRawConfig()"></textarea>
-                        <!-- Upload .txt button right under the paste textarea -->
-                        <div class="d-flex gap-2 mt-1">
-                            <label class="btn btn-outline-light btn-sm flex-grow-1 mb-0" style="cursor:pointer;">
+                        <!-- Upload buttons right under the paste textarea -->
+                        <div class="mt-1">
+                            <label class="btn btn-outline-light btn-sm w-100 mb-1" style="cursor:pointer;">
                                 &#128193; Upload .txt Config File
                                 <input type="file" id="configFileInput" class="d-none" accept=".txt,.config,.conf" onchange="handleConfigFileUpload(event)">
                             </label>
-                            <label class="btn btn-outline-warning btn-sm mb-0" style="cursor:pointer;">
-                                &#128273; Upload .pem Key
+                            <label class="btn btn-outline-warning btn-sm w-100 mb-0" style="cursor:pointer;">
+                                &#128273; Upload .pem Private Key
                                 <input type="file" id="keyFileInput" class="d-none" accept=".pem,.txt,.key" onchange="handleKeyUpload(event)">
                             </label>
                         </div>
