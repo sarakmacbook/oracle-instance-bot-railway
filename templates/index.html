@@ -112,11 +112,23 @@
             const tenancyMatch = rawText.match(/tenancy\s*=\s*(ocid1\.tenancy\.[^\s#\n,]+)/i);
             const fingerprintMatch = rawText.match(/fingerprint\s*=\s*([a-fA-F0-9:]{32,47})/i);
             const regionMatch = rawText.match(/region\s*=\s*([a-zA-Z0-9-]+)/i);
+            const keyContentMatch = rawText.match(/key\s*=\s*-----BEGIN[^]*?END[^]*?\n?/i);
 
-            if (userMatch) document.getElementById("user").value = userMatch[1].trim();
-            if (tenancyMatch) document.getElementById("tenancy").value = tenancyMatch[1].trim();
-            if (fingerprintMatch) document.getElementById("fingerprint").value = fingerprintMatch[1].trim();
-            if (regionMatch) document.getElementById("region").value = regionMatch[1].trim();
+            let parsed = [];
+            if (userMatch) { document.getElementById("user").value = userMatch[1].trim(); parsed.push('user'); }
+            if (tenancyMatch) { document.getElementById("tenancy").value = tenancyMatch[1].trim(); parsed.push('tenancy'); }
+            if (fingerprintMatch) { document.getElementById("fingerprint").value = fingerprintMatch[1].trim(); parsed.push('fingerprint'); }
+            if (regionMatch) { document.getElementById("region").value = regionMatch[1].trim(); parsed.push('region'); }
+            // If the pasted config contains an inline private key, extract it too
+            if (keyContentMatch) {
+                document.getElementById("private_key").value = keyContentMatch[0].trim();
+                parsed.push('private_key');
+            }
+
+            // Visual feedback
+            if (parsed.length > 0) {
+                showConfigStatus('config', 'Auto-parsed: ' + parsed.join(', '));
+            }
         }
 
         function handleKeyUpload(event) {
@@ -124,9 +136,96 @@
             if (!file) return;
             const reader = new FileReader();
             reader.onload = function(e) {
-                document.getElementById("private_key").value = e.target.result;
+                const content = e.target.result;
+                // If the uploaded file contains OCI config directives (user=, tenancy=, etc.)
+                // treat it as a config file instead of a private key
+                if (content.includes('user=') || content.includes('fingerprint=')) {
+                    document.getElementById("rawConfigInput").value = content;
+                    parseRawConfig();
+                    showConfigStatus('config', 'Config loaded from file & auto-parsed');
+                } else {
+                    document.getElementById("private_key").value = content;
+                    showConfigStatus('key', 'Private key loaded from file');
+                }
             };
             reader.readAsText(file);
+        }
+
+        function handleConfigFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const content = e.target.result;
+                document.getElementById("rawConfigInput").value = content;
+                parseRawConfig();
+                showConfigStatus('config', 'Config file loaded & auto-parsed');
+            };
+            reader.readAsText(file);
+        }
+
+        function showConfigStatus(type, msg) {
+            const box = document.getElementById("configStatusBox");
+            if (!box) return;
+            box.className = 'small mt-1 ' + (type === 'error' ? 'text-danger' : type === 'key' ? 'text-info' : 'text-success');
+            box.innerHTML = (type === 'error' ? '&#10008; ' : type === 'key' ? '&#128273; ' : '&#10004; ') + msg;
+        }
+
+        async function testOciConfig() {
+            parseRawConfig();
+            const user = document.getElementById("user").value;
+            const keyContent = document.getElementById("private_key").value;
+
+            if (!user || !keyContent) {
+                showConfigStatus('error', 'Please paste config text AND upload a private key file first.');
+                return;
+            }
+
+            const btn = document.getElementById("testConfigBtn");
+            btn.disabled = true;
+            btn.innerText = "Testing...";
+
+            const payload = {
+                user: document.getElementById("user").value,
+                tenancy: document.getElementById("tenancy").value,
+                fingerprint: document.getElementById("fingerprint").value,
+                region: document.getElementById("region").value,
+                private_key: document.getElementById("private_key").value
+            };
+
+            try {
+                const response = await fetch('/api/test-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    showConfigStatus('config', 'Connected! Region: ' + result.region + ' | ADs: ' + (result.availability_domains || []).length);
+                    btn.className = "btn btn-success w-100 fw-bold btn-sm mt-2";
+                    btn.innerText = "Connected";
+                    setTimeout(() => {
+                        btn.className = "btn btn-outline-warning w-100 fw-bold btn-sm mt-2";
+                        btn.innerText = "Test Config";
+                    }, 4000);
+                } else {
+                    showConfigStatus('error', result.error);
+                    if (result.hint) {
+                        showConfigStatus('error', result.error + ' | ' + result.hint);
+                    }
+                    btn.className = "btn btn-outline-danger w-100 fw-bold btn-sm mt-2";
+                    btn.innerText = "Failed - Try Again";
+                    setTimeout(() => {
+                        btn.className = "btn btn-outline-warning w-100 fw-bold btn-sm mt-2";
+                        btn.innerText = "Test Config";
+                    }, 4000);
+                }
+            } catch (err) {
+                showConfigStatus('error', 'Request error: ' + err.message);
+            } finally {
+                btn.disabled = false;
+            }
         }
 
         async function detectAvailableOS() {
@@ -726,17 +825,24 @@
 
                 <div class="bg-dark p-3 rounded-3 mb-4 text-white">
                     <h5 class="text-warning">1. Drop Credentials & Config File</h5>
-                    <div class="mb-3">
+                    <div class="mb-2">
                         <label class="form-label text-white-50">Paste raw text configuration block:</label>
-                        <textarea id="rawConfigInput" class="form-control bg-secondary text-white border-0" rows="3" placeholder="Paste config text here..." oninput="parseRawConfig()"></textarea>
+                        <textarea id="rawConfigInput" class="form-control bg-secondary text-white border-0" style="font-family:monospace; font-size:0.8rem;" rows="4" placeholder="[DEFAULT]&#10;user=ocid1.user.oc1..xxxxxxxxxx&#10;fingerprint=aa:bb:cc:dd:...&#10;tenancy=ocid1.tenancy.oc1..xxxxxxxxxx&#10;region=ap-chuncheon-1&#10;key_file=~/.oci/oci_api_key.pem" oninput="parseRawConfig()"></textarea>
                     </div>
-                    <div class="mb-3">
-                        <label class="form-label text-white-50">Upload downloaded (.pem) Private Key file:</label>
-                        <input type="file" class="form-control bg-secondary text-white border-0" accept=".pem" onchange="handleKeyUpload(event)">
+                    <div class="row g-2 mb-2">
+                        <div class="col">
+                            <label class="form-label text-white-50 small mb-1">&#128193; Upload Config (.txt):</label>
+                            <input type="file" id="configFileInput" class="form-control form-control-sm bg-secondary text-white border-0" accept=".txt,.config,.conf" onchange="handleConfigFileUpload(event)">
+                        </div>
+                        <div class="col">
+                            <label class="form-label text-white-50 small mb-1">&#128273; Upload Private Key (.pem):</label>
+                            <input type="file" id="keyFileInput" class="form-control form-control-sm bg-secondary text-white border-0" accept=".pem,.txt,.key" onchange="handleKeyUpload(event)">
+                        </div>
                     </div>
-
-                    <button type="button" id="freeTierBtn" class="btn btn-outline-success w-100 fw-bold btn-sm mb-2" onclick="checkFreeTierStatus()">Check Free Tier Usage</button>
-                    <button type="button" id="scanOSBtn" class="btn btn-outline-info w-100 fw-bold btn-sm" onclick="detectAvailableOS()">Ubuntu-Only OS</button>
+                    <div id="configStatusBox" class="small mt-1"></div>
+                    <button type="button" id="testConfigBtn" class="btn btn-outline-warning w-100 fw-bold btn-sm mt-2" onclick="testOciConfig()">Test Config</button>
+                    <button type="button" id="freeTierBtn" class="btn btn-outline-success w-100 fw-bold btn-sm mt-2" onclick="checkFreeTierStatus()">Check Free Tier Usage</button>
+                    <button type="button" id="scanOSBtn" class="btn btn-outline-info w-100 fw-bold btn-sm mt-1" onclick="detectAvailableOS()">Ubuntu-Only OS</button>
                     <button type="button" id="telegramAlertBtn" class="btn btn-outline-primary w-100 fw-bold btn-sm mt-2" onclick="configureTelegramAlert()">&#128172; Telegram Alert</button>
                     <div id="telegramConfigPanel" class="mt-2 d-none">
                         <div class="bg-secondary p-2 rounded-2">
