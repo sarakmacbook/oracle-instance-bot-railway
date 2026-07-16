@@ -491,7 +491,67 @@ def get_oci_username(config, identity_client):
         return None
 
 
+import random
+
+...
+
 def run_automated_creation(config, account_config, compute_client, network_client, identity_client,
+                    retry_delay=60, randomize_delay=False, random_min=25, random_max=60,
+                    telegram_bot_token=None, telegram_chat_id=None):
+    global automation_running
+    
+    # Initialize retry parameters
+    attempts = 0
+    base_delay = retry_delay
+    max_attempts = int(os.environ.get('MAX_ATTEMPTS', 100))
+    
+    while attempts < max_attempts:
+        try:
+            # Add progress logging
+            add_log(f"Attempt {attempts + 1}/{max_attempts} - Checking free tier limits...")
+            
+            # Enhanced free tier check allowing existing resources
+            can_proceed, limit_message = check_free_tier_limits(config, compute_client, block_client, identity_client)
+            if not can_proceed:
+                if account_config.get('use_existing', False):
+                    add_log("Proceeding with existing resources despite limit")
+                else:
+                    add_log(f"Quota limit reached: {limit_message}")
+                    return False, "quota_exceeded"
+            
+            # Core instance creation logic
+            if create_instance(...):  # Assuming this function exists
+                return True, "success"
+
+            # Calculated delay with exponential backoff and jitter
+            delay = base_delay * (2 ** attempts)
+            if randomize_delay:
+                delay += random.uniform(random_min, random_max)
+            
+            add_log(f"Attempt {attempts + 1} failed, retrying in {delay} seconds...")
+            time.sleep(delay)
+            attempts += 1
+
+        except oci.exceptions.ServiceError as e:
+            if "RateLimit" in str(e):
+                # Special handling for rate limits
+                delay = 600  # 10 minutes for rate limit recovery
+                add_log(f"Rate limited. Waiting {delay} seconds...")
+                time.sleep(delay)
+                continue
+            
+        except Exception as e:
+            add_log(f"Error: {str(e)}")
+            if attempts >= max_attempts:
+                return False, "max_retries_exceeded"
+
+    return False, "loop_completed_without_success"
+
+# Ensure the function is properly called
+if __name__ == '__main__':
+    # Example usage
+    run_automated_creation(...)
+
                            retry_delay=60, randomize_delay=False, random_min=25, random_max=60,
                            telegram_bot_token=None, telegram_chat_id=None):
     global automation_running
