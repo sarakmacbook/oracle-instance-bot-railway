@@ -50,6 +50,11 @@ automation_running = False
 automation_shape = None  # Track which shape is currently running
 stop_event = threading.Event()
 
+# ---- Image Cache ----
+image_cache = {}       # key: "compartment_id|shape|all_os_mode" -> (timestamp, images)
+image_cache_lock = threading.Lock()
+IMAGE_CACHE_TTL = 300  # 5 minutes in seconds
+
 
 def add_log(message):
     timestamp = format_phnom_penh_time()  # FIXED: Use Phnom Penh timezone
@@ -116,15 +121,25 @@ def list_available_images():
         compute = oci.core.ComputeClient(config)
         compartment_id = get_compartment_id(config, data)
 
-        # Use platform images (Oracle-provided, much faster than compartment scan)
-        # Platform images are pre-cached and don't require deep compartment traversal
+        # Build cache key
+        cache_key = f"{compartment_id}|{shape or 'any'}|{all_os_mode}"
+        now = time.time()
+
+        # Check cache first
+        with image_cache_lock:
+            if cache_key in image_cache:
+                cached_time, cached_images = image_cache[cache_key]
+                if now - cached_time < IMAGE_CACHE_TTL:
+                    add_log(f"Image cache HIT: returning {len(cached_images)} cached images (age: {int(now - cached_time)}s)")
+                    return jsonify({'success': True, 'images': cached_images, 'cached': True})
+
         kwargs = {'compartment_id': compartment_id}
         if shape:
             kwargs['shape'] = shape
 
-        add_log(f"Scanning images for shape '{shape}' in compartment {compartment_id[:30]}...")
+        add_log(f"Image cache MISS: scanning images for shape '{shape}' in compartment {compartment_id[:30]}...")
 
-        # Fetch images with early filtering via OCI API where possible
+        # Fetch images from OCI API
         images = compute.list_images(**kwargs).data
 
         # FIXED: Use Phnom Penh timezone for image sorting
@@ -171,12 +186,16 @@ def list_available_images():
                 'os_version': version
             })
 
-            # Hard cap: stop after 30 valid images found (UI only shows ~20 anyway)
+            # Hard cap: stop after 30 valid images found
             if len(valid) >= 30:
                 break
 
-        add_log(f"Image scan complete: {checked} checked, {len(valid)} Ubuntu images found.")
-        return jsonify({'success': True, 'images': valid})
+        # Store in cache
+        with image_cache_lock:
+            image_cache[cache_key] = (now, valid)
+
+        add_log(f"Image scan complete: {checked} checked, {len(valid)} Ubuntu images found. Cached for 5 min.")
+        return jsonify({'success': True, 'images': valid, 'cached': False})
 
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
