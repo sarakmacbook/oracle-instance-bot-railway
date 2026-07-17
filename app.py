@@ -71,6 +71,14 @@ def build_config(data):
     }
 
 
+def get_compartment_id(config, data):
+    """Return compartment_id from payload, or fall back to tenancy root."""
+    comp = data.get('compartment_id', '').strip()
+    if comp and comp.startswith('ocid1.compartment.'):
+        return comp
+    return config['tenancy']
+
+
 def require_auth(f):
     @functools.wraps(f)
     def decorated(*args, **kwargs):
@@ -106,8 +114,9 @@ def list_available_images():
     try:
         oci.config.validate_config(config)
         compute = oci.core.ComputeClient(config)
+        compartment_id = get_compartment_id(config, data)
 
-        kwargs = {'compartment_id': config['tenancy']}
+        kwargs = {'compartment_id': compartment_id}
         if shape:
             kwargs['shape'] = shape
 
@@ -163,6 +172,7 @@ def list_available_images():
 
 def check_free_tier_limits(config, account_config, compute_client, block_client, identity_client):
     tenancy = config['tenancy']
+    compartment_id = get_compartment_id(config, account_config)
     requested_shape = account_config.get('shape')
     requested_boot_gb = int(account_config.get('boot_volume_gb', 50))
     if requested_boot_gb < 50:
@@ -172,7 +182,7 @@ def check_free_tier_limits(config, account_config, compute_client, block_client,
     total_storage = 0
     for ad in ads:
         boot_volumes = block_client.list_boot_volumes(
-            compartment_id=tenancy,
+            compartment_id=compartment_id,
             availability_domain=ad.name
         ).data
         total_storage += sum(
@@ -186,7 +196,7 @@ def check_free_tier_limits(config, account_config, compute_client, block_client,
             f"(used {total_storage} GB + requested {requested_boot_gb} GB)"
         )
 
-    instances = compute_client.list_instances(compartment_id=tenancy).data
+    instances = compute_client.list_instances(compartment_id=compartment_id).data
     active_states = {'RUNNING', 'PROVISIONING', 'STARTING'}
 
     if requested_shape == 'VM.Standard.E2.1.Micro':
@@ -228,9 +238,10 @@ def check_free_tier_limits(config, account_config, compute_client, block_client,
 
 
 
-def get_free_tier_usage(config, compute_client, block_client, identity_client):
+def get_free_tier_usage(config, account_config, compute_client, block_client, identity_client):
     """Returns current free tier usage without blocking."""
     tenancy = config['tenancy']
+    compartment_id = get_compartment_id(config, account_config)
 
     ads = identity_client.list_availability_domains(compartment_id=tenancy).data
 
@@ -238,7 +249,7 @@ def get_free_tier_usage(config, compute_client, block_client, identity_client):
     total_storage = 0
     for ad in ads:
         boot_volumes = block_client.list_boot_volumes(
-            compartment_id=tenancy,
+            compartment_id=compartment_id,
             availability_domain=ad.name
         ).data
         total_storage += sum(
@@ -248,7 +259,7 @@ def get_free_tier_usage(config, compute_client, block_client, identity_client):
     storage_remaining = max(0, 200 - total_storage)
 
     # Instance usage
-    instances = compute_client.list_instances(compartment_id=tenancy).data
+    instances = compute_client.list_instances(compartment_id=compartment_id).data
     active_states = {'RUNNING', 'PROVISIONING', 'STARTING'}
 
     # Micro instances
@@ -399,6 +410,8 @@ def run_automated_creation(config, account_config, compute_client, network_clien
     except Exception as e:
         add_log(f"Could not detect OCI username: {str(e)}")
 
+    compartment_id = get_compartment_id(config, account_config)
+
     try:
         block_client = oci.core.BlockstorageClient(config)
         ok, err = check_free_tier_limits(
@@ -415,13 +428,13 @@ def run_automated_creation(config, account_config, compute_client, network_clien
         ).data
         ad_name = ads[0].name if ads else ''
 
-        vcns = network_client.list_vcns(compartment_id=config['tenancy']).data
+        vcns = network_client.list_vcns(compartment_id=compartment_id).data
         if not vcns:
             add_log("Error: No VCN found.")
             return
 
         subnets = network_client.list_subnets(
-            compartment_id=config['tenancy'],
+            compartment_id=compartment_id,
             vcn_id=vcns[0].id
         ).data
         if not subnets:
@@ -464,7 +477,7 @@ def run_automated_creation(config, account_config, compute_client, network_clien
             )
 
         instance_details = oci.core.models.LaunchInstanceDetails(
-            compartment_id=config['tenancy'],
+            compartment_id=compartment_id,
             availability_domain=ad_name,
             shape=account_config['shape'],
             shape_config=shape_config,
@@ -527,8 +540,17 @@ def run_automated_creation(config, account_config, compute_client, network_clien
                 if "Out of capacity" in msg or e.status in (500, 429, 503, 504):
                     user_info = f" [user: {oci_username}]" if oci_username else ""
                     add_log(f"Capacity busy in '{target_region}'.{user_info} Retrying...")
+                elif e.status == 404:
+                    add_log(f"ERROR 404: Resource not found. Check: (1) Compartment OCID is correct, (2) VCN/Subnet exist in this compartment, (3) Image ID is valid for this region.")
+                    break
+                elif e.status == 401:
+                    add_log(f"ERROR 401: Authorization failed. Check: (1) IAM policies allow 'manage instances' + 'manage virtual-network-family' + 'manage volumes' in compartment '{compartment_id[:30]}...', (2) API key is active and not expired, (3) User has correct permissions.")
+                    break
+                elif e.status == 400:
+                    add_log(f"ERROR 400: Bad request - {e.message[:120]}. Check shape config, image compatibility, and free tier limits.")
+                    break
                 else:
-                    add_log(f"OCI API error: {e.message}")
+                    add_log(f"OCI API error ({e.status}): {e.message}")
                     break
             except (ConnectionError, OSError) as e:
                 # Handle connection drops, timeouts, DNS failures as retryable
@@ -603,7 +625,7 @@ def free_tier_status():
         block_client = oci.core.BlockstorageClient(config)
         identity_client = oci.identity.IdentityClient(config)
 
-        usage = get_free_tier_usage(config, compute_client, block_client, identity_client)
+        usage = get_free_tier_usage(config, data, compute_client, block_client, identity_client)
 
         return jsonify({
             'success': True,
