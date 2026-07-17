@@ -622,8 +622,8 @@
                         <textarea id="rawConfigInput" class="form-control bg-secondary text-white border-0" rows="3" placeholder="Paste config text here..." oninput="parseRawConfig()"></textarea>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label text-white-50">Upload downloaded (.pem) Private Key file:</label>
-                        <input type="file" class="form-control bg-secondary text-white border-0" accept=".pem" onchange="handleKeyUpload(event)">
+                        <label class="form-label text-white-50">Upload downloaded (.pem / .txt) Private Key file:</label>
+                        <input type="file" class="form-control bg-secondary text-white border-0" accept=".pem,.txt" onchange="handleKeyUpload(event)">
                     </div>
 
                     <button type="button" id="freeTierBtn" class="btn btn-outline-success w-100 fw-bold btn-sm mb-2" onclick="checkFreeTierStatus()">Check Free Tier Usage</button>
