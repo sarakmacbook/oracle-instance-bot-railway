@@ -159,6 +159,7 @@
                 fingerprint: document.getElementById("fingerprint").value,
                 region: document.getElementById("region").value,
                 private_key: document.getElementById("private_key").value,
+                compartment_id: document.getElementById("compartment_id").value,
                 shape: document.getElementById("shapeSelector").value,
                 all_os_mode: allOSMode
             };
@@ -212,7 +213,8 @@
                 tenancy: document.getElementById("tenancy").value,
                 fingerprint: document.getElementById("fingerprint").value,
                 region: document.getElementById("region").value,
-                private_key: document.getElementById("private_key").value
+                private_key: document.getElementById("private_key").value,
+                compartment_id: document.getElementById("compartment_id").value
             };
 
             try {
@@ -406,6 +408,7 @@
                 fingerprint: document.getElementById("fingerprint").value,
                 region: document.getElementById("region").value,
                 private_key: document.getElementById("private_key").value,
+                compartment_id: document.getElementById("compartment_id").value,
                 shape: document.getElementById("shapeSelector").value,
                 image_id: imgId,
                 display_name: document.getElementById("display_name").value,
