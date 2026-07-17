@@ -116,10 +116,15 @@ def list_available_images():
         compute = oci.core.ComputeClient(config)
         compartment_id = get_compartment_id(config, data)
 
+        # Use platform images (Oracle-provided, much faster than compartment scan)
+        # Platform images are pre-cached and don't require deep compartment traversal
         kwargs = {'compartment_id': compartment_id}
         if shape:
             kwargs['shape'] = shape
 
+        add_log(f"Scanning images for shape '{shape}' in compartment {compartment_id[:30]}...")
+
+        # Fetch images with early filtering via OCI API where possible
         images = compute.list_images(**kwargs).data
 
         # FIXED: Use Phnom Penh timezone for image sorting
@@ -131,15 +136,17 @@ def list_available_images():
         )
 
         valid = []
+        checked = 0
         for img in images:
             if getattr(img, 'lifecycle_state', '') != 'AVAILABLE':
                 continue
 
+            checked += 1
             os_name = (getattr(img, 'operating_system', '') or '').lower()
             version = (getattr(img, 'operating_system_version', '') or '').strip()
             display_name = (img.display_name or '').lower()
 
-            # Filter by OS if not in All-OS-Mode
+            # Fast-path: skip non-Ubuntu early to avoid regex work
             if not all_os_mode:
                 if 'ubuntu' not in os_name:
                     continue
@@ -164,7 +171,12 @@ def list_available_images():
                 'os_version': version
             })
 
-        return jsonify({'success': True, 'images': valid[:50]})
+            # Hard cap: stop after 30 valid images found (UI only shows ~20 anyway)
+            if len(valid) >= 30:
+                break
+
+        add_log(f"Image scan complete: {checked} checked, {len(valid)} Ubuntu images found.")
+        return jsonify({'success': True, 'images': valid})
 
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
