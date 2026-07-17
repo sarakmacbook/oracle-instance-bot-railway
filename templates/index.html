@@ -112,23 +112,11 @@
             const tenancyMatch = rawText.match(/tenancy\s*=\s*(ocid1\.tenancy\.[^\s#\n,]+)/i);
             const fingerprintMatch = rawText.match(/fingerprint\s*=\s*([a-fA-F0-9:]{32,47})/i);
             const regionMatch = rawText.match(/region\s*=\s*([a-zA-Z0-9-]+)/i);
-            const keyContentMatch = rawText.match(/key\s*=\s*-----BEGIN[^]*?END[^]*?\n?/i);
 
-            let parsed = [];
-            if (userMatch) { document.getElementById("user").value = userMatch[1].trim(); parsed.push('user'); }
-            if (tenancyMatch) { document.getElementById("tenancy").value = tenancyMatch[1].trim(); parsed.push('tenancy'); }
-            if (fingerprintMatch) { document.getElementById("fingerprint").value = fingerprintMatch[1].trim(); parsed.push('fingerprint'); }
-            if (regionMatch) { document.getElementById("region").value = regionMatch[1].trim(); parsed.push('region'); }
-            // If the pasted config contains an inline private key, extract it too
-            if (keyContentMatch) {
-                document.getElementById("private_key").value = keyContentMatch[0].trim();
-                parsed.push('private_key');
-            }
-
-            // Visual feedback
-            if (parsed.length > 0) {
-                showConfigStatus('config', 'Auto-parsed: ' + parsed.join(', '));
-            }
+            if (userMatch) document.getElementById("user").value = userMatch[1].trim();
+            if (tenancyMatch) document.getElementById("tenancy").value = tenancyMatch[1].trim();
+            if (fingerprintMatch) document.getElementById("fingerprint").value = fingerprintMatch[1].trim();
+            if (regionMatch) document.getElementById("region").value = regionMatch[1].trim();
         }
 
         function handleKeyUpload(event) {
@@ -136,96 +124,9 @@
             if (!file) return;
             const reader = new FileReader();
             reader.onload = function(e) {
-                const content = e.target.result;
-                // If the uploaded file contains OCI config directives (user=, tenancy=, etc.)
-                // treat it as a config file instead of a private key
-                if (content.includes('user=') || content.includes('fingerprint=')) {
-                    document.getElementById("rawConfigInput").value = content;
-                    parseRawConfig();
-                    showConfigStatus('config', 'Config loaded from file & auto-parsed');
-                } else {
-                    document.getElementById("private_key").value = content;
-                    showConfigStatus('key', 'Private key loaded from file');
-                }
+                document.getElementById("private_key").value = e.target.result;
             };
             reader.readAsText(file);
-        }
-
-        function handleConfigFileUpload(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                const content = e.target.result;
-                document.getElementById("rawConfigInput").value = content;
-                parseRawConfig();
-                showConfigStatus('config', 'Config file loaded & auto-parsed');
-            };
-            reader.readAsText(file);
-        }
-
-        function showConfigStatus(type, msg) {
-            const box = document.getElementById("configStatusBox");
-            if (!box) return;
-            box.className = 'small mt-1 ' + (type === 'error' ? 'text-danger' : type === 'key' ? 'text-info' : 'text-success');
-            box.innerHTML = (type === 'error' ? '&#10008; ' : type === 'key' ? '&#128273; ' : '&#10004; ') + msg;
-        }
-
-        async function testOciConfig() {
-            parseRawConfig();
-            const user = document.getElementById("user").value;
-            const keyContent = document.getElementById("private_key").value;
-
-            if (!user || !keyContent) {
-                showConfigStatus('error', 'Please paste config text AND upload a private key file first.');
-                return;
-            }
-
-            const btn = document.getElementById("testConfigBtn");
-            btn.disabled = true;
-            btn.innerText = "Testing...";
-
-            const payload = {
-                user: document.getElementById("user").value,
-                tenancy: document.getElementById("tenancy").value,
-                fingerprint: document.getElementById("fingerprint").value,
-                region: document.getElementById("region").value,
-                private_key: document.getElementById("private_key").value
-            };
-
-            try {
-                const response = await fetch('/api/test-config', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                const result = await response.json();
-
-                if (result.success) {
-                    showConfigStatus('config', 'Connected! Region: ' + result.region + ' | ADs: ' + (result.availability_domains || []).length);
-                    btn.className = "btn btn-success w-100 fw-bold btn-sm mt-2";
-                    btn.innerText = "Connected";
-                    setTimeout(() => {
-                        btn.className = "btn btn-outline-warning w-100 fw-bold btn-sm mt-2";
-                        btn.innerText = "Test Config";
-                    }, 4000);
-                } else {
-                    showConfigStatus('error', result.error);
-                    if (result.hint) {
-                        showConfigStatus('error', result.error + ' | ' + result.hint);
-                    }
-                    btn.className = "btn btn-outline-danger w-100 fw-bold btn-sm mt-2";
-                    btn.innerText = "Failed - Try Again";
-                    setTimeout(() => {
-                        btn.className = "btn btn-outline-warning w-100 fw-bold btn-sm mt-2";
-                        btn.innerText = "Test Config";
-                    }, 4000);
-                }
-            } catch (err) {
-                showConfigStatus('error', 'Request error: ' + err.message);
-            } finally {
-                btn.disabled = false;
-            }
         }
 
         async function detectAvailableOS() {
@@ -647,138 +548,13 @@
             telegramConfig.chatId = '';
             document.getElementById("tg_bot_token").value = '';
             document.getElementById("tg_chat_id").value = '';
-            document.getElementById("tg_link_bot_token").value = '';
             document.getElementById("tgTestResult").innerHTML = '<span class="text-muted">Alerts disabled.</span>';
-            document.getElementById("tgLinkResult").innerHTML = '';
             document.getElementById("telegramAlertBtn").classList.remove("btn-primary");
             document.getElementById("telegramAlertBtn").classList.add("btn-outline-primary");
             document.getElementById("telegramAlertBtn").innerHTML = "&#128172; Telegram Alert";
             document.getElementById("tgConnectBtn").classList.remove("d-none");
             document.getElementById("tgConnectBtn").disabled = false;
             document.getElementById("tgDisconnectBtn").classList.add("d-none");
-        }
-
-        // === Connect-via-Link ===
-        let tgPollTimer = null;
-        let tgConnectCode = null;
-
-        function tgSwitchMode(mode) {
-            const manualDiv = document.getElementById('tgManualMode');
-            const linkDiv = document.getElementById('tgLinkMode');
-            const tabManual = document.getElementById('tgTabManual');
-            const tabLink = document.getElementById('tgTabLink');
-            if (mode === 'manual') {
-                manualDiv.classList.remove('d-none');
-                linkDiv.classList.add('d-none');
-                tabManual.classList.add('active');
-                tabLink.classList.remove('active');
-                if (tgPollTimer) { clearInterval(tgPollTimer); tgPollTimer = null; }
-            } else {
-                manualDiv.classList.add('d-none');
-                linkDiv.classList.remove('d-none');
-                tabLink.classList.add('active');
-                tabManual.classList.remove('active');
-            }
-        }
-
-        async function tgLinkStart() {
-            const token = document.getElementById("tg_link_bot_token").value.trim();
-            const resultDiv = document.getElementById("tgLinkResult");
-
-            if (!token) {
-                resultDiv.innerHTML = '<span class="text-warning">&#9888; Please enter your Bot Token.</span>';
-                return;
-            }
-
-            resultDiv.innerHTML = '<span class="text-info">&#8987; Verifying bot token...</span>';
-            document.getElementById("tgLinkStartBtn").disabled = true;
-
-            try {
-                // Step 1: Get connect link
-                const resp = await fetch('/api/tg-connect/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ bot_token: token })
-                });
-                const data = await resp.json();
-
-                if (!data.success) {
-                    resultDiv.innerHTML = '<span class="text-danger">&#10008; ' + data.error + '</span>';
-                    document.getElementById("tgLinkStartBtn").disabled = false;
-                    return;
-                }
-
-                tgConnectCode = data.connect_code;
-                const botName = data.bot_username;
-
-                // Step 2: Show the link to user
-                resultDiv.innerHTML =
-                    '<div class="alert alert-info p-2 mb-2">' +
-                    '<span class="small">&#128241; Open this link in Telegram, then hit <b>Start</b>:</span><br>' +
-                    '<a href="' + data.connect_url + '" class="text-warning fw-bold small" target="_blank">t.me/' + botName + '</a>' +
-                    '</div>' +
-                    '<span class="text-info small">&#8987; Waiting for you to hit Start...</span>';
-
-                // Step 3: Poll for chat_id
-                let pollCount = 0;
-                const maxPolls = 60; // 5 minutes at 5s intervals
-
-                if (tgPollTimer) clearInterval(tgPollTimer);
-
-                tgPollTimer = setInterval(async () => {
-                    pollCount++;
-                    if (pollCount > maxPolls) {
-                        clearInterval(tgPollTimer);
-                        tgPollTimer = null;
-                        resultDiv.innerHTML += '<br><span class="text-danger small">&#10008; Timed out. Please try again.</span>';
-                        document.getElementById("tgLinkStartBtn").disabled = false;
-                        return;
-                    }
-
-                    try {
-                        const pollResp = await fetch('/api/tg-connect/poll', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ bot_token: token, connect_code: tgConnectCode })
-                        });
-                        const pollData = await pollResp.json();
-
-                        if (pollData.success) {
-                            // Got the chat_id!
-                            clearInterval(tgPollTimer);
-                            tgPollTimer = null;
-
-                            // Auto-fill the manual fields too
-                            telegramConfig.enabled = true;
-                            telegramConfig.botToken = token;
-                            telegramConfig.chatId = pollData.chat_id;
-                            document.getElementById("tg_bot_token").value = token;
-                            document.getElementById("tg_chat_id").value = pollData.chat_id;
-
-                            const nameStr = pollData.chat_first_name ? ' (' + pollData.chat_first_name + ')' : '';
-                            resultDiv.innerHTML =
-                                '<div class="alert alert-success p-2">' +
-                                '<span class="small">&#10004; <b>Connected!</b></span><br>' +
-                                '<span class="small">Chat ID: <code>' + pollData.chat_id + '</code>' + nameStr + '</span><br>' +
-                                '<span class="small text-success">Alerts are now active.</span>' +
-                                '</div>';
-
-                            document.getElementById("telegramAlertBtn").classList.remove("btn-outline-primary");
-                            document.getElementById("telegramAlertBtn").classList.add("btn-primary");
-                            document.getElementById("telegramAlertBtn").innerHTML = "&#128172; Telegram Alert (ON)";
-                            document.getElementById("tgLinkStartBtn").disabled = false;
-                            document.getElementById("tgDisconnectBtn").classList.remove("d-none");
-                        }
-                        // If waiting: do nothing, keep polling
-                    } catch (e) {
-                        // Network error — keep polling
-                    }
-                }, 5000); // Poll every 5 seconds
-
-            } catch (err) {
-                resultDiv.innerHTML = '<span class="text-danger">&#10008; Error: ' + err.message + '</span>';
-                document.getElementById("tgLinkStartBtn").disabled = false;
-            }
         }
 
         async function sendTelegramAlert(message) {
@@ -825,51 +601,25 @@
 
                 <div class="bg-dark p-3 rounded-3 mb-4 text-white">
                     <h5 class="text-warning">1. Drop Credentials & Config File</h5>
-                    <div class="mb-2">
+                    <div class="mb-3">
                         <label class="form-label text-white-50">Paste raw text configuration block:</label>
-                        <textarea id="rawConfigInput" class="form-control bg-secondary text-white border-0" style="font-family:monospace; font-size:0.8rem;" rows="4" placeholder="[DEFAULT]&#10;user=ocid1.user.oc1..xxxxxxxxxx&#10;fingerprint=aa:bb:cc:dd:...&#10;tenancy=ocid1.tenancy.oc1..xxxxxxxxxx&#10;region=ap-chuncheon-1&#10;key_file=~/.oci/oci_api_key.pem" oninput="parseRawConfig()"></textarea>
-                        <!-- Upload buttons right under the paste textarea -->
-                        <div class="mt-1">
-                            <label class="btn btn-outline-light btn-sm w-100 mb-1" style="cursor:pointer;">
-                                &#128193; Upload .txt Config File
-                                <input type="file" id="configFileInput" class="d-none" accept=".txt,.config,.conf" onchange="handleConfigFileUpload(event)">
-                            </label>
-                            <label class="btn btn-outline-warning btn-sm w-100 mb-0" style="cursor:pointer;">
-                                &#128273; Upload .pem Private Key
-                                <input type="file" id="keyFileInput" class="d-none" accept=".pem,.txt,.key" onchange="handleKeyUpload(event)">
-                            </label>
-                        </div>
+                        <textarea id="rawConfigInput" class="form-control bg-secondary text-white border-0" rows="3" placeholder="Paste config text here..." oninput="parseRawConfig()"></textarea>
                     </div>
-                    <div id="configStatusBox" class="small mt-1"></div>
-                    <button type="button" id="testConfigBtn" class="btn btn-outline-warning w-100 fw-bold btn-sm mt-2" onclick="testOciConfig()">Test Config</button>
-                    <button type="button" id="freeTierBtn" class="btn btn-outline-success w-100 fw-bold btn-sm mt-2" onclick="checkFreeTierStatus()">Check Free Tier Usage</button>
-                    <button type="button" id="scanOSBtn" class="btn btn-outline-info w-100 fw-bold btn-sm mt-1" onclick="detectAvailableOS()">Ubuntu-Only OS</button>
+                    <div class="mb-3">
+                        <label class="form-label text-white-50">Upload downloaded (.pem) Private Key file:</label>
+                        <input type="file" class="form-control bg-secondary text-white border-0" accept=".pem" onchange="handleKeyUpload(event)">
+                    </div>
+
+                    <button type="button" id="freeTierBtn" class="btn btn-outline-success w-100 fw-bold btn-sm mb-2" onclick="checkFreeTierStatus()">Check Free Tier Usage</button>
+                    <button type="button" id="scanOSBtn" class="btn btn-outline-info w-100 fw-bold btn-sm" onclick="detectAvailableOS()">Ubuntu-Only OS</button>
                     <button type="button" id="telegramAlertBtn" class="btn btn-outline-primary w-100 fw-bold btn-sm mt-2" onclick="configureTelegramAlert()">&#128172; Telegram Alert</button>
                     <div id="telegramConfigPanel" class="mt-2 d-none">
                         <div class="bg-secondary p-2 rounded-2">
-                            <!-- === MODE TABS === -->
-                            <div class="btn-group btn-group-sm w-100 mb-2" role="group">
-                                <button type="button" id="tgTabManual" class="btn btn-outline-light active" onclick="tgSwitchMode('manual')">Manual</button>
-                                <button type="button" id="tgTabLink" class="btn btn-outline-light" onclick="tgSwitchMode('link')">Connect via Link</button>
-                            </div>
-
-                            <!-- === MANUAL MODE === -->
-                            <div id="tgManualMode">
-                                <label class="form-label text-white-50 small mb-1">Bot Token:</label>
-                                <input type="password" id="tg_bot_token" class="form-control form-control-sm bg-dark text-white border-0 mb-2" placeholder="123456:ABC-DEF...">
-                                <label class="form-label text-white-50 small mb-1">Chat ID:</label>
-                                <input type="text" id="tg_chat_id" class="form-control form-control-sm bg-dark text-white border-0 mb-2" placeholder="@channel or 123456789">
-                                <button type="button" id="tgConnectBtn" class="btn btn-success btn-sm w-100" onclick="testTelegramAlert()">&#128279; Send Connected Message</button>
-                            </div>
-
-                            <!-- === LINK CONNECT MODE === -->
-                            <div id="tgLinkMode" class="d-none">
-                                <label class="form-label text-white-50 small mb-1">Bot Token (only):</label>
-                                <input type="password" id="tg_link_bot_token" class="form-control form-control-sm bg-dark text-white border-0 mb-2" placeholder="123456:ABC-DEF...">
-                                <button type="button" id="tgLinkStartBtn" class="btn btn-info btn-sm w-100" onclick="tgLinkStart()">&#128279; Generate Connect Link</button>
-                                <div id="tgLinkResult" class="mt-2"></div>
-                            </div>
-
+                            <label class="form-label text-white-50 small mb-1">Bot Token:</label>
+                            <input type="password" id="tg_bot_token" class="form-control form-control-sm bg-dark text-white border-0 mb-2" placeholder="123456:ABC-DEF...">
+                            <label class="form-label text-white-50 small mb-1">Chat ID:</label>
+                            <input type="text" id="tg_chat_id" class="form-control form-control-sm bg-dark text-white border-0 mb-2" placeholder="@channel or 123456789">
+                            <button type="button" id="tgConnectBtn" class="btn btn-success btn-sm w-100" onclick="testTelegramAlert()">&#128279; Send Connected Message</button>
                             <button type="button" id="tgDisconnectBtn" class="btn btn-outline-danger btn-sm w-100 mt-2 d-none" onclick="disconnectTelegram()">&#128683; Turn Off Alerts</button>
                             <div id="tgTestResult" class="form-text small mt-1"></div>
                         </div>
