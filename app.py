@@ -50,11 +50,6 @@ automation_running = False
 automation_shape = None  # Track which shape is currently running
 stop_event = threading.Event()
 
-# ---- Image Cache ----
-image_cache = {}       # key: "compartment_id|shape|all_os_mode" -> (timestamp, images)
-image_cache_lock = threading.Lock()
-IMAGE_CACHE_TTL = 300  # 5 minutes in seconds
-
 
 def add_log(message):
     timestamp = format_phnom_penh_time()  # FIXED: Use Phnom Penh timezone
@@ -74,14 +69,6 @@ def build_config(data):
         "region": data.get('region'),
         "key_content": data.get('private_key')
     }
-
-
-def get_compartment_id(config, data):
-    """Return compartment_id from payload, or fall back to tenancy root."""
-    comp = data.get('compartment_id', '').strip()
-    if comp and comp.startswith('ocid1.compartment.'):
-        return comp
-    return config['tenancy']
 
 
 def require_auth(f):
@@ -119,27 +106,11 @@ def list_available_images():
     try:
         oci.config.validate_config(config)
         compute = oci.core.ComputeClient(config)
-        compartment_id = get_compartment_id(config, data)
 
-        # Build cache key
-        cache_key = f"{compartment_id}|{shape or 'any'}|{all_os_mode}"
-        now = time.time()
-
-        # Check cache first
-        with image_cache_lock:
-            if cache_key in image_cache:
-                cached_time, cached_images = image_cache[cache_key]
-                if now - cached_time < IMAGE_CACHE_TTL:
-                    add_log(f"Image cache HIT: returning {len(cached_images)} cached images (age: {int(now - cached_time)}s)")
-                    return jsonify({'success': True, 'images': cached_images, 'cached': True})
-
-        kwargs = {'compartment_id': compartment_id}
+        kwargs = {'compartment_id': config['tenancy']}
         if shape:
             kwargs['shape'] = shape
 
-        add_log(f"Image cache MISS: scanning images for shape '{shape}' in compartment {compartment_id[:30]}...")
-
-        # Fetch images from OCI API
         images = compute.list_images(**kwargs).data
 
         # FIXED: Use Phnom Penh timezone for image sorting
@@ -151,17 +122,15 @@ def list_available_images():
         )
 
         valid = []
-        checked = 0
         for img in images:
             if getattr(img, 'lifecycle_state', '') != 'AVAILABLE':
                 continue
 
-            checked += 1
             os_name = (getattr(img, 'operating_system', '') or '').lower()
             version = (getattr(img, 'operating_system_version', '') or '').strip()
             display_name = (img.display_name or '').lower()
 
-            # Fast-path: skip non-Ubuntu early to avoid regex work
+            # Filter by OS if not in All-OS-Mode
             if not all_os_mode:
                 if 'ubuntu' not in os_name:
                     continue
@@ -186,16 +155,7 @@ def list_available_images():
                 'os_version': version
             })
 
-            # Hard cap: stop after 30 valid images found
-            if len(valid) >= 30:
-                break
-
-        # Store in cache
-        with image_cache_lock:
-            image_cache[cache_key] = (now, valid)
-
-        add_log(f"Image scan complete: {checked} checked, {len(valid)} Ubuntu images found. Cached for 5 min.")
-        return jsonify({'success': True, 'images': valid, 'cached': False})
+        return jsonify({'success': True, 'images': valid[:50]})
 
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
@@ -203,7 +163,6 @@ def list_available_images():
 
 def check_free_tier_limits(config, account_config, compute_client, block_client, identity_client):
     tenancy = config['tenancy']
-    compartment_id = get_compartment_id(config, account_config)
     requested_shape = account_config.get('shape')
     requested_boot_gb = int(account_config.get('boot_volume_gb', 50))
     if requested_boot_gb < 50:
@@ -213,7 +172,7 @@ def check_free_tier_limits(config, account_config, compute_client, block_client,
     total_storage = 0
     for ad in ads:
         boot_volumes = block_client.list_boot_volumes(
-            compartment_id=compartment_id,
+            compartment_id=tenancy,
             availability_domain=ad.name
         ).data
         total_storage += sum(
@@ -227,7 +186,7 @@ def check_free_tier_limits(config, account_config, compute_client, block_client,
             f"(used {total_storage} GB + requested {requested_boot_gb} GB)"
         )
 
-    instances = compute_client.list_instances(compartment_id=compartment_id).data
+    instances = compute_client.list_instances(compartment_id=tenancy).data
     active_states = {'RUNNING', 'PROVISIONING', 'STARTING'}
 
     if requested_shape == 'VM.Standard.E2.1.Micro':
@@ -269,10 +228,9 @@ def check_free_tier_limits(config, account_config, compute_client, block_client,
 
 
 
-def get_free_tier_usage(config, account_config, compute_client, block_client, identity_client):
+def get_free_tier_usage(config, compute_client, block_client, identity_client):
     """Returns current free tier usage without blocking."""
     tenancy = config['tenancy']
-    compartment_id = get_compartment_id(config, account_config)
 
     ads = identity_client.list_availability_domains(compartment_id=tenancy).data
 
@@ -280,7 +238,7 @@ def get_free_tier_usage(config, account_config, compute_client, block_client, id
     total_storage = 0
     for ad in ads:
         boot_volumes = block_client.list_boot_volumes(
-            compartment_id=compartment_id,
+            compartment_id=tenancy,
             availability_domain=ad.name
         ).data
         total_storage += sum(
@@ -290,7 +248,7 @@ def get_free_tier_usage(config, account_config, compute_client, block_client, id
     storage_remaining = max(0, 200 - total_storage)
 
     # Instance usage
-    instances = compute_client.list_instances(compartment_id=compartment_id).data
+    instances = compute_client.list_instances(compartment_id=tenancy).data
     active_states = {'RUNNING', 'PROVISIONING', 'STARTING'}
 
     # Micro instances
@@ -441,8 +399,6 @@ def run_automated_creation(config, account_config, compute_client, network_clien
     except Exception as e:
         add_log(f"Could not detect OCI username: {str(e)}")
 
-    compartment_id = get_compartment_id(config, account_config)
-
     try:
         block_client = oci.core.BlockstorageClient(config)
         ok, err = check_free_tier_limits(
@@ -459,13 +415,13 @@ def run_automated_creation(config, account_config, compute_client, network_clien
         ).data
         ad_name = ads[0].name if ads else ''
 
-        vcns = network_client.list_vcns(compartment_id=compartment_id).data
+        vcns = network_client.list_vcns(compartment_id=config['tenancy']).data
         if not vcns:
             add_log("Error: No VCN found.")
             return
 
         subnets = network_client.list_subnets(
-            compartment_id=compartment_id,
+            compartment_id=config['tenancy'],
             vcn_id=vcns[0].id
         ).data
         if not subnets:
@@ -508,7 +464,7 @@ def run_automated_creation(config, account_config, compute_client, network_clien
             )
 
         instance_details = oci.core.models.LaunchInstanceDetails(
-            compartment_id=compartment_id,
+            compartment_id=config['tenancy'],
             availability_domain=ad_name,
             shape=account_config['shape'],
             shape_config=shape_config,
@@ -571,17 +527,8 @@ def run_automated_creation(config, account_config, compute_client, network_clien
                 if "Out of capacity" in msg or e.status in (500, 429, 503, 504):
                     user_info = f" [user: {oci_username}]" if oci_username else ""
                     add_log(f"Capacity busy in '{target_region}'.{user_info} Retrying...")
-                elif e.status == 404:
-                    add_log(f"ERROR 404: Resource not found. Check: (1) Compartment OCID is correct, (2) VCN/Subnet exist in this compartment, (3) Image ID is valid for this region.")
-                    break
-                elif e.status == 401:
-                    add_log(f"ERROR 401: Authorization failed. Check: (1) IAM policies allow 'manage instances' + 'manage virtual-network-family' + 'manage volumes' in compartment '{compartment_id[:30]}...', (2) API key is active and not expired, (3) User has correct permissions.")
-                    break
-                elif e.status == 400:
-                    add_log(f"ERROR 400: Bad request - {e.message[:120]}. Check shape config, image compatibility, and free tier limits.")
-                    break
                 else:
-                    add_log(f"OCI API error ({e.status}): {e.message}")
+                    add_log(f"OCI API error: {e.message}")
                     break
             except (ConnectionError, OSError) as e:
                 # Handle connection drops, timeouts, DNS failures as retryable
@@ -656,7 +603,7 @@ def free_tier_status():
         block_client = oci.core.BlockstorageClient(config)
         identity_client = oci.identity.IdentityClient(config)
 
-        usage = get_free_tier_usage(config, data, compute_client, block_client, identity_client)
+        usage = get_free_tier_usage(config, compute_client, block_client, identity_client)
 
         return jsonify({
             'success': True,
